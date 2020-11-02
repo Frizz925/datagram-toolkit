@@ -102,6 +102,7 @@ func TestNetem(t *testing.T) {
 		clientWrite(require)
 		r := serverRead(require, cfg.ReadFragmentSize, true)
 		require.Equal(r, expectedLen/2)
+		require.Equal(expected[32:48], buf[16:32])
 	})
 
 	t.Run("fragmentation+loss:write", func(t *testing.T) {
@@ -115,6 +116,7 @@ func TestNetem(t *testing.T) {
 		clientWrite(require)
 		r := serverRead(require, cfg.WriteFragmentSize, true)
 		require.Equal(r, expectedLen/2)
+		require.Equal(expected[32:48], buf[16:32])
 	})
 
 	t.Run("fragmentation+loss+duplication:read", func(t *testing.T) {
@@ -129,6 +131,7 @@ func TestNetem(t *testing.T) {
 		clientWrite(require)
 		r := serverRead(require, cfg.ReadFragmentSize, true)
 		require.Equal(r, expectedLen*3/4)
+		require.Equal(buf[16:32], buf[32:48])
 	})
 
 	t.Run("fragmentation+loss+duplication:write", func(t *testing.T) {
@@ -143,6 +146,7 @@ func TestNetem(t *testing.T) {
 		clientWrite(require)
 		r := serverRead(require, cfg.WriteFragmentSize, true)
 		require.Equal(r, expectedLen*3/4)
+		require.Equal(buf[16:32], buf[32:48])
 	})
 
 	{ // Teardown

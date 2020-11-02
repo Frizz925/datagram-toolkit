@@ -289,8 +289,10 @@ func (ne *Netem) internalRead(b []byte) (int, error) {
 	rd := atomic.LoadUint32(&ne.readDuplicateNth)
 	shouldDupe := rd > 0 && rc%rd == 0
 	if shouldDupe {
-		// Write back what we read to simulate packet duplication on next read
-		ne.buffer.Write(b[:n])
+		// Put what we read into the queue to simulate packet duplication
+		d := make([]byte, n)
+		copy(d, b[:n])
+		ne.readQueue <- d
 	}
 	return n, nil
 }
@@ -312,7 +314,7 @@ func (ne *Netem) internalWrite(b []byte) (int, error) {
 		wl := atomic.LoadUint32(&ne.writeLossNth)
 		shouldLoss := wl > 0 && wc%wl == 0
 		if shouldLoss {
-			// Skip read on packet loss
+			// Skip write to wire on packet loss
 			nb := len(b)
 			if fs > nb {
 				nn = nb
@@ -329,8 +331,10 @@ func (ne *Netem) internalWrite(b []byte) (int, error) {
 			wd := atomic.LoadUint32(&ne.writeDuplicateNth)
 			shouldDupe := wd > 0 && wc%wd == 0
 			if shouldDupe {
-				// Reset the write count to write the same content on next loop
-				nn = 0
+				// Put what we wrote into the queue to simulate packet duplication
+				d := make([]byte, fs)
+				copy(d, b[:fs])
+				ne.writeQueue <- writeRequest{data: d}
 			}
 		}
 		b = b[nn:]
@@ -360,7 +364,9 @@ func (ne *Netem) writeRoutine() {
 		case wr := <-ne.writeQueue:
 			var res writeResult
 			res.n, res.err = ne.internalWrite(wr.data)
-			wr.result <- res
+			if wr.result != nil {
+				wr.result <- res
+			}
 		case <-ne.die:
 			return
 		}
