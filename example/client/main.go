@@ -1,8 +1,10 @@
 package main
 
 import (
+	"crypto/rand"
 	"datagram-toolkit/crypto"
 	"datagram-toolkit/example/shared"
+	"io"
 	"net"
 	"os"
 
@@ -24,6 +26,13 @@ func main() {
 }
 
 func start() error {
+	// Initialize the payload
+	payload := make([]byte, 64)
+	_, err := io.ReadFull(rand.Reader, payload)
+	if err != nil {
+		return err
+	}
+
 	// Initialize the AEAD
 	aead := shared.CreateAEAD()
 
@@ -36,9 +45,8 @@ func start() error {
 	defer conn.Close()
 
 	crypto := crypto.New(conn, crypto.DefaultConfig(aead))
-	message := "Hello, world!"
-	log.Infof("Sending to server: %s", message)
-	if _, err := crypto.Write([]byte(message)); err != nil {
+	log.Infof("Sending to server, length: %d", len(payload))
+	if _, err := crypto.Write(payload); err != nil {
 		return err
 	}
 
@@ -47,8 +55,7 @@ func start() error {
 	if err != nil {
 		return err
 	}
-	response := string(buf[:n])
-	log.Infof("Received from server: %s", response)
+	log.Infof("Received from server, length: %d", n)
 
 	return nil
 }

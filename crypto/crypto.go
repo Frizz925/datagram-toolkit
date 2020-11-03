@@ -27,9 +27,6 @@ func DefaultConfig(aead cipher.AEAD) Config {
 	return Config{
 		BufferSize: defaultBufferSize,
 		AEAD:       aead,
-		NonceReadWriter: &sequentialNonceReadWriter{
-			size: aead.NonceSize(),
-		},
 	}
 }
 
@@ -48,6 +45,11 @@ func New(rw io.ReadWriter, cfg Config) *Crypto {
 	if cfg.BufferSize < minBufferSize {
 		cfg.BufferSize = minBufferSize
 	}
+	if cfg.NonceReadWriter == nil {
+		cfg.NonceReadWriter = &sequentialNonceReadWriter{
+			size: cfg.AEAD.NonceSize(),
+		}
+	}
 	return &Crypto{
 		AEAD:            cfg.AEAD,
 		NonceReadWriter: cfg.NonceReadWriter,
@@ -60,7 +62,7 @@ func New(rw io.ReadWriter, cfg Config) *Crypto {
 func (c *Crypto) Read(b []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.buffer.Len() > len(b) {
+	if c.buffer.Len() > 0 {
 		return c.buffer.Read(b)
 	}
 	// Read the nonce

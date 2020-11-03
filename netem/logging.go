@@ -7,8 +7,8 @@ import (
 )
 
 var log = &logrus.Logger{
-	Out:   os.Stdout,
-	Level: logrus.DebugLevel,
+	Out:   os.Stderr,
+	Level: logrus.WarnLevel,
 	Formatter: &logrus.TextFormatter{
 		FullTimestamp: true,
 	},

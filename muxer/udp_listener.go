@@ -60,7 +60,9 @@ type UDPListener struct {
 
 	accept chan *UDPSession
 	write  chan udpWriteRequest
-	die    chan struct{}
+
+	err chan error
+	die chan struct{}
 
 	closed uatomic.Bool
 }
@@ -85,6 +87,7 @@ func NewUDPListener(conn *net.UDPConn, cfg UDPConfig) *UDPListener {
 		sessions: make(map[string]*UDPSession),
 		accept:   make(chan *UDPSession, cfg.AcceptBacklog),
 		write:    make(chan udpWriteRequest, cfg.WriteBacklog),
+		err:      make(chan error, 1),
 		die:      make(chan struct{}),
 	}
 	ul.wg.Add(2)
@@ -141,7 +144,15 @@ func (ul *UDPListener) Close() error {
 	}
 	ul.wg.Wait()
 	ul.closed.Set(true)
-	return nil
+	select {
+	case err := <-ul.err:
+		if noe, ok := err.(*net.OpError); ok && noe.Op == "read" {
+			return nil
+		}
+		return err
+	default:
+		return nil
+	}
 }
 
 func (ul *UDPListener) readRoutine() {
@@ -150,9 +161,7 @@ func (ul *UDPListener) readRoutine() {
 	for {
 		n, raddr, err := ul.conn.ReadFromUDP(buf)
 		if err != nil {
-			if _, ok := err.(*net.OpError); !ok {
-				log.Errorf("Read error: %+v", err)
-			}
+			ul.err <- err
 			return
 		}
 		data := make([]byte, n)
@@ -169,12 +178,6 @@ func (ul *UDPListener) writeRoutine() {
 			var res udpWriteResult
 			res.n, res.err = ul.conn.WriteToUDP(wr.data, wr.raddr)
 			wr.result <- res
-			if res.err != nil {
-				if _, ok := res.err.(*net.OpError); !ok {
-					log.Errorf("Read error: %+v", res.err)
-				}
-				return
-			}
 		case <-ul.die:
 			return
 		}

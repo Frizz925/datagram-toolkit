@@ -5,9 +5,11 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,8 +20,9 @@ func TestNetem(t *testing.T) {
 	buf := make([]byte, 256)
 	cfg := Config{}
 
+	// Setup
 	var ns, nc *Netem
-	{ // Setup
+	{
 		require := require.New(t)
 		_, err := io.ReadFull(rand, expected)
 		require.Nil(err)
@@ -34,29 +37,49 @@ func TestNetem(t *testing.T) {
 	}
 
 	clientWrite := func(require *require.Assertions) {
+		deadline := getOpDeadline()
+		require.Nil(nc.SetDeadline(deadline))
 		w, err := nc.Write(expected)
 		require.Nil(err)
 		require.Equal(expectedLen, w)
 	}
 
 	serverRead := func(require *require.Assertions, fragmentSize int, timeout bool) int {
-		if timeout {
-			deadline := time.Now().Add(250 * time.Millisecond)
-			require.Nil(ns.SetReadDeadline(deadline))
-		}
 		r := 0
 		for r < expectedLen {
+			if timeout {
+				deadline := getOpDeadline()
+				require.Nil(ns.SetDeadline(deadline))
+			}
 			n, err := ns.Read(buf[r:])
 			if err != errors.ErrTimeout {
 				require.Nil(err)
 			} else {
 				break
 			}
-			require.Equal(fragmentSize, n)
+			require.GreaterOrEqual(fragmentSize, n)
 			r += n
 		}
 		return r
 	}
+
+	// Teardown
+	t.Cleanup(func() {
+		var err error
+		require := require.New(t)
+		require.Nil(nc.Close())
+
+		_, err = nc.Read(nil)
+		require.Equal(ErrNetemClosed, err)
+		_, err = nc.Write(nil)
+		require.Equal(ErrNetemClosed, err)
+		require.Equal(ErrNetemClosed, nc.Close())
+
+		require.Nil(ns.Conn.Close())
+		noe, ok := ns.Close().(*net.OpError)
+		require.True(ok)
+		require.Equal("close", noe.Op)
+	})
 
 	t.Run("normal", func(t *testing.T) {
 		require := require.New(t)
@@ -67,10 +90,10 @@ func TestNetem(t *testing.T) {
 		require.Equal(expected, buf[:r])
 	})
 
-	t.Run("fragmentation:read", func(t *testing.T) {
+	t.Run("frag:read", func(t *testing.T) {
 		require := require.New(t)
 		cfg := Config{
-			ReadFragmentSize: 16,
+			ReadFragmentSize: 24,
 		}
 		ns.Update(cfg)
 		nc.Reset()
@@ -79,10 +102,10 @@ func TestNetem(t *testing.T) {
 		require.Equal(expected, buf[:r])
 	})
 
-	t.Run("fragmentation:write", func(t *testing.T) {
+	t.Run("frag:write", func(t *testing.T) {
 		require := require.New(t)
 		cfg := Config{
-			WriteFragmentSize: 16,
+			WriteFragmentSize: 24,
 		}
 		nc.Update(cfg)
 		ns.Reset()
@@ -91,67 +114,108 @@ func TestNetem(t *testing.T) {
 		require.Equal(expected, buf[:r])
 	})
 
-	t.Run("fragmentation+loss:read", func(t *testing.T) {
+	t.Run("frag+loss:read", func(t *testing.T) {
 		require := require.New(t)
 		cfg := Config{
-			ReadLossNth:      2,
 			ReadFragmentSize: 16,
+			ReadLossNth:      2,
 		}
 		ns.Update(cfg)
 		nc.Reset()
 		clientWrite(require)
 		r := serverRead(require, cfg.ReadFragmentSize, true)
-		require.Equal(r, expectedLen/2)
+		require.Equal(expectedLen/2, r)
 		require.Equal(expected[32:48], buf[16:32])
 	})
 
-	t.Run("fragmentation+loss:write", func(t *testing.T) {
+	t.Run("frag+loss:write", func(t *testing.T) {
 		require := require.New(t)
 		cfg := Config{
-			WriteLossNth:      2,
 			WriteFragmentSize: 16,
+			WriteLossNth:      2,
 		}
 		nc.Update(cfg)
 		ns.Reset()
 		clientWrite(require)
 		r := serverRead(require, cfg.WriteFragmentSize, true)
-		require.Equal(r, expectedLen/2)
+		require.Equal(expectedLen/2, r)
 		require.Equal(expected[32:48], buf[16:32])
 	})
 
-	t.Run("fragmentation+loss+duplication:read", func(t *testing.T) {
+	t.Run("frag+dupe+loss:read", func(t *testing.T) {
 		require := require.New(t)
 		cfg := Config{
-			ReadLossNth:      2,
-			ReadDuplicateNth: 3,
 			ReadFragmentSize: 16,
+			ReadDuplicateNth: 2,
+			ReadLossNth:      4,
 		}
 		ns.Update(cfg)
 		nc.Reset()
 		clientWrite(require)
 		r := serverRead(require, cfg.ReadFragmentSize, true)
-		require.Equal(r, expectedLen*3/4)
+		require.Equal(expectedLen, r)
+		require.Equal(expected[:32], buf[:32])
 		require.Equal(buf[16:32], buf[32:48])
+		require.Equal(expected[48:], buf[48:64])
 	})
 
-	t.Run("fragmentation+loss+duplication:write", func(t *testing.T) {
+	t.Run("frag+loss+dupe:write", func(t *testing.T) {
 		require := require.New(t)
 		cfg := Config{
-			WriteLossNth:      2,
-			WriteDuplicateNth: 3,
 			WriteFragmentSize: 16,
+			WriteDuplicateNth: 2,
+			WriteLossNth:      4,
 		}
 		nc.Update(cfg)
 		ns.Reset()
 		clientWrite(require)
 		r := serverRead(require, cfg.WriteFragmentSize, true)
-		require.Equal(r, expectedLen*3/4)
+		require.Equal(expectedLen, r)
+		require.Equal(expected[:32], buf[:32])
 		require.Equal(buf[16:32], buf[32:48])
+		require.Equal(expected[48:], buf[48:64])
 	})
 
-	{ // Teardown
+	t.Run("frag+dupe+reorder+loss:read", func(t *testing.T) {
 		require := require.New(t)
-		require.Nil(nc.Close())
-		require.Nil(ns.Close())
-	}
+		cfg := Config{
+			ReadFragmentSize: 16,
+			ReadDuplicateNth: 2,
+			ReadReorderNth:   3,
+			ReadLossNth:      4,
+		}
+		ns.Update(cfg)
+		nc.Reset()
+		clientWrite(require)
+		r := serverRead(require, cfg.ReadFragmentSize, true)
+		require.Equal(expectedLen, r)
+		require.Equal(expected[:48], buf[:48])
+		require.Equal(expected[16:32], buf[48:64])
+	})
+
+	t.Run("frag+dupe+reorder+loss:write", func(t *testing.T) {
+		require := require.New(t)
+		cfg := Config{
+			WriteFragmentSize: 16,
+			WriteDuplicateNth: 2,
+			WriteReorderNth:   3,
+			WriteLossNth:      4,
+		}
+		nc.Update(cfg)
+		ns.Reset()
+		clientWrite(require)
+		r := serverRead(require, cfg.WriteFragmentSize, true)
+		require.Equal(expectedLen, r)
+		require.Equal(expected[:48], buf[:48])
+		require.Equal(expected[16:32], buf[48:64])
+	})
+}
+
+func getOpDeadline() time.Time {
+	return time.Now().Add(125 * time.Millisecond)
+}
+
+func init() {
+	log.Out = os.Stdout
+	log.Level = logrus.DebugLevel
 }

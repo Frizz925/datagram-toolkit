@@ -1,8 +1,11 @@
 package muxer
 
 import (
+	"datagram-toolkit/util/errors"
+	"io"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -22,6 +25,7 @@ func TestUDPListener(t *testing.T) {
 
 	conn, err := net.DialUDP("udp", nil, ul.Addr().(*net.UDPAddr))
 	require.Nil(err)
+	defer conn.Close()
 
 	w, err := conn.Write(expected)
 	require.Nil(err)
@@ -32,6 +36,19 @@ func TestUDPListener(t *testing.T) {
 	require.Nil(err)
 	require.Equal(w, r)
 	require.Equal(expected, buf[:r])
+
+	client, err := ul.Open(conn.LocalAddr().(*net.UDPAddr))
+	require.Nil(err)
+
+	_, err = client.Read(nil)
+	require.Equal(io.EOF, err)
+	_, err = client.Write(nil)
+	require.Equal(io.EOF, err)
+
+	deadline := time.Now().Add(10 * time.Millisecond)
+	require.Nil(client.SetDeadline(deadline))
+	_, err = client.Read(buf)
+	require.Equal(errors.ErrTimeout, err)
 
 	require.Nil(ul.Close())
 	require.Nil(<-ch)
@@ -44,6 +61,7 @@ func serve(l net.Listener, ch chan<- error) {
 		ch <- err
 		return
 	}
+	defer conn.Close()
 	buf := make([]byte, 512)
 	n, err := conn.Read(buf)
 	if err != nil {

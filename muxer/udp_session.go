@@ -63,6 +63,9 @@ func (us *UDPSession) Read(b []byte) (int, error) {
 	if us.closed.Get() {
 		return 0, ErrSessionClosed
 	}
+	if len(b) <= 0 {
+		return 0, io.EOF
+	}
 	var deadline <-chan time.Time
 	for {
 		if us.bufferLen() > 0 {
@@ -88,6 +91,9 @@ func (us *UDPSession) Read(b []byte) (int, error) {
 func (us *UDPSession) Write(b []byte) (int, error) {
 	if us.closed.Get() {
 		return 0, ErrSessionClosed
+	}
+	if len(b) <= 0 {
+		return 0, io.EOF
 	}
 	var deadline <-chan time.Time
 	ch := make(chan udpWriteResult)
