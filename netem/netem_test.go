@@ -2,9 +2,9 @@ package netem
 
 import (
 	"datagram-toolkit/util/errors"
+	"datagram-toolkit/util/mocks"
 	"io"
 	"math/rand"
-	"net"
 	"os"
 	"testing"
 	"time"
@@ -27,12 +27,8 @@ func TestNetem(t *testing.T) {
 		_, err := io.ReadFull(rand, expected)
 		require.Nil(err)
 
-		s, err := net.ListenUDP("udp", nil)
-		require.Nil(err)
+		s, c := mocks.Conn()
 		ns = New(s, cfg)
-
-		c, err := net.DialUDP("udp", nil, s.LocalAddr().(*net.UDPAddr))
-		require.Nil(err)
 		nc = New(c, cfg)
 	}
 
@@ -52,10 +48,11 @@ func TestNetem(t *testing.T) {
 				require.Nil(ns.SetDeadline(deadline))
 			}
 			n, err := ns.Read(buf[r:])
-			if err != errors.ErrTimeout {
-				require.Nil(err)
-			} else {
-				break
+			if err != nil {
+				if errors.IsDeadlineError(err) {
+					break
+				}
+				require.Fail("Unexpected error", "Expected deadline error, got %v", err)
 			}
 			require.GreaterOrEqual(fragmentSize, n)
 			r += n
@@ -65,20 +62,9 @@ func TestNetem(t *testing.T) {
 
 	// Teardown
 	t.Cleanup(func() {
-		var err error
 		require := require.New(t)
 		require.Nil(nc.Close())
-
-		_, err = nc.Read(nil)
-		require.Equal(ErrNetemClosed, err)
-		_, err = nc.Write(nil)
-		require.Equal(ErrNetemClosed, err)
-		require.Equal(ErrNetemClosed, nc.Close())
-
-		require.Nil(ns.Conn.Close())
-		noe, ok := ns.Close().(*net.OpError)
-		require.True(ok)
-		require.Equal("close", noe.Op)
+		require.Nil(ns.Close())
 	})
 
 	t.Run("normal", func(t *testing.T) {
