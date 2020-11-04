@@ -1,7 +1,7 @@
 package frame
 
 import (
-	utilio "datagram-toolkit/util/io"
+	uio "datagram-toolkit/util/io"
 	"io"
 )
 
@@ -23,5 +23,5 @@ func WriteRaw(w io.Writer, buf []byte) error {
 	if err := WriteVarInt(w, length); err != nil {
 		return err
 	}
-	return utilio.WriteFull(w, buf)
+	return uio.WriteFull(w, buf)
 }

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
-	utilio "datagram-toolkit/util/io"
+	uio "datagram-toolkit/util/io"
 	"io"
 	"math/rand"
 	"testing"
@@ -25,9 +25,9 @@ func TestCrypto(t *testing.T) {
 	pr1, pw1 := io.Pipe()
 	pr2, pw2 := io.Pipe()
 
-	rwc1 := utilio.NewReadWriteCloser(pr1, pw2)
+	rwc1 := uio.NewReadWriteCloser(pr1, pw2)
 	defer rwc1.Close()
-	rwc2 := utilio.NewReadWriteCloser(pr2, pw1)
+	rwc2 := uio.NewReadWriteCloser(pr2, pw1)
 	defer rwc2.Close()
 
 	buf1 := make([]byte, 512)

@@ -1,7 +1,7 @@
 package crypto
 
 import (
-	utilio "datagram-toolkit/util/io"
+	uio "datagram-toolkit/util/io"
 	"encoding/binary"
 	"io"
 	"sync/atomic"
@@ -35,5 +35,5 @@ func (snrw *sequentialNonceReadWriter) WriteNonce(w io.Writer) error {
 	} else {
 		binary.LittleEndian.PutUint64(nonce, seq)
 	}
-	return utilio.WriteFull(w, nonce)
+	return uio.WriteFull(w, nonce)
 }

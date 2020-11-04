@@ -2,7 +2,7 @@ package frame
 
 import (
 	"bytes"
-	utilio "datagram-toolkit/util/io"
+	uio "datagram-toolkit/util/io"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -48,11 +48,11 @@ func WriteVarInt(w io.Writer, v uint) error {
 		flag = flagUint6
 	}
 	buf[0] = ((flag & 0x03) << 6) | (buf[0] & 0x3F)
-	return utilio.WriteFull(w, buf)
+	return uio.WriteFull(w, buf)
 }
 
 func ReadVarInt(r io.Reader) (uint, error) {
-	firstByte, err := utilio.ReadByte(r)
+	firstByte, err := uio.ReadByte(r)
 	if err != nil {
 		return 0, err
 	}
