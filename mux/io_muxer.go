@@ -28,10 +28,17 @@ type IOMuxer struct {
 
 	die chan struct{}
 
-	closed uatomic.Bool
+	closed    uatomic.Bool
+	closeOnce sync.Once
 }
 
 var _ Muxer = (*IOMuxer)(nil)
+
+var handlerMap = map[uint8]func(*IOMuxer, frame){
+	cmdSYN: (*IOMuxer).handleSYN,
+	cmdSTD: (*IOMuxer).handleSTD,
+	cmdFIN: (*IOMuxer).handleFIN,
+}
 
 func NewIOMuxer(rwc io.ReadWriteCloser, cfg Config) *IOMuxer {
 	cfg = sanitizeConfig(cfg)
@@ -41,6 +48,7 @@ func NewIOMuxer(rwc io.ReadWriteCloser, cfg Config) *IOMuxer {
 		streams:  make(map[uint32]*IOStream),
 		acceptCh: make(chan *IOStream, cfg.AcceptBacklog),
 		writeCh:  make(chan writeRequest, cfg.WriteBacklog),
+		die:      make(chan struct{}),
 	}
 	iom.wg.Add(2)
 	go iom.readRoutine()
@@ -48,11 +56,7 @@ func NewIOMuxer(rwc io.ReadWriteCloser, cfg Config) *IOMuxer {
 	return iom
 }
 
-func (iom *IOMuxer) Open() (io.ReadWriteCloser, error) {
-	return iom.OpenStream()
-}
-
-func (iom *IOMuxer) OpenStream() (Stream, error) {
+func (iom *IOMuxer) Open() (Stream, error) {
 	if err := iom.errIfClosed(); err != nil {
 		return nil, err
 	}
@@ -94,11 +98,7 @@ func (iom *IOMuxer) OpenStream() (Stream, error) {
 	}
 }
 
-func (iom *IOMuxer) Accept() (io.ReadWriteCloser, error) {
-	return iom.AcceptStream()
-}
-
-func (iom *IOMuxer) AcceptStream() (Stream, error) {
+func (iom *IOMuxer) Accept() (Stream, error) {
 	if err := iom.errIfClosed(); err != nil {
 		return nil, err
 	}
@@ -118,6 +118,24 @@ func (iom *IOMuxer) AcceptStream() (Stream, error) {
 }
 
 func (iom *IOMuxer) Close() error {
+	if err := iom.errIfClosed(); err != nil {
+		return err
+	}
+	iom.mu.Lock()
+	defer iom.mu.Unlock()
+	for _, s := range iom.streams {
+		if err := s.close(false); err != nil {
+			return err
+		}
+	}
+	iom.closed.Set(true)
+	iom.closeOnce.Do(func() {
+		close(iom.die)
+	})
+	if err := iom.rwc.Close(); err != nil {
+		return err
+	}
+	iom.wg.Wait()
 	return nil
 }
 
@@ -133,15 +151,9 @@ func (iom *IOMuxer) readRoutine() {
 			continue
 		}
 		f := frame(buf[:n])
-		id := f.StreamID()
-		ios := iom.getStream(id)
-		switch f.Cmd() {
-		case cmdSYN:
-			iom.acceptStream(ios)
-		case cmdSTD:
-			iom.dispatchStream(ios, f)
-		case cmdFIN:
-			iom.closeStream(ios)
+		h := handlerMap[f.Cmd()]
+		if h != nil {
+			h(iom, f)
 		}
 	}
 }
@@ -165,6 +177,38 @@ func (iom *IOMuxer) writeRoutine() {
 	}
 }
 
+func (iom *IOMuxer) handleSYN(f frame) {
+	id := f.StreamID()
+	if iom.hasStream(id) {
+		return
+	}
+	ios := iom.openStream(id)
+	iom.acceptCh <- ios
+}
+
+func (iom *IOMuxer) handleSTD(f frame) {
+	ios := iom.getStream(f.StreamID())
+	if ios == nil {
+		return
+	}
+	b := make([]byte, f.Len())
+	copy(b, f.Body())
+	ios.dispatch(b)
+}
+
+func (iom *IOMuxer) handleFIN(f frame) {
+	id := f.StreamID()
+	if id <= 0 {
+		//nolint:errcheck
+		iom.Close()
+		return
+	}
+	ios := iom.getStream(id)
+	if ios != nil {
+		ios.Close()
+	}
+}
+
 func (iom *IOMuxer) write(id uint32, cmd uint8, b []byte) (int, error) {
 	res := <-iom.writeAsync(id, cmd, b)
 	return res.n, res.err
@@ -179,18 +223,12 @@ func (iom *IOMuxer) writeAsync(id uint32, cmd uint8, b []byte) <-chan writeResul
 	return ch
 }
 
-func (iom *IOMuxer) getStream(id uint32) *IOStream {
-	iom.mu.RLock()
-	ios, ok := iom.streams[id]
-	iom.mu.RUnlock()
-	if !ok {
-		ios = iom.openStream(id)
-	}
-	return ios
-}
-
 func (iom *IOMuxer) openStream(id uint32) *IOStream {
-	ios := newIOStream(ioStreamConfig{
+	ios := iom.getStream(id)
+	if ios != nil {
+		return ios
+	}
+	ios = newIOStream(ioStreamConfig{
 		muxer:       iom,
 		id:          id,
 		readBacklog: iom.cfg.ReadBacklog,
@@ -201,25 +239,23 @@ func (iom *IOMuxer) openStream(id uint32) *IOStream {
 	return ios
 }
 
+func (iom *IOMuxer) getStream(id uint32) *IOStream {
+	iom.mu.RLock()
+	defer iom.mu.RUnlock()
+	return iom.streams[id]
+}
+
+func (iom *IOMuxer) hasStream(id uint32) bool {
+	iom.mu.RLock()
+	defer iom.mu.RUnlock()
+	_, ok := iom.streams[id]
+	return ok
+}
+
 func (iom *IOMuxer) removeStream(id uint32) {
 	iom.mu.Lock()
 	defer iom.mu.Unlock()
 	delete(iom.streams, id)
-}
-
-func (iom *IOMuxer) acceptStream(ios *IOStream) {
-	iom.acceptCh <- ios
-}
-
-func (iom *IOMuxer) dispatchStream(ios *IOStream, f frame) {
-	b := make([]byte, f.Len())
-	copy(b, f.Body())
-	ios.dispatch(b)
-}
-
-func (iom *IOMuxer) closeStream(ios *IOStream) {
-	//nolint:errcheck
-	ios.Close()
 }
 
 func (iom *IOMuxer) getReadError() error {

@@ -2,7 +2,6 @@ package mux
 
 import (
 	"io"
-	"net"
 )
 
 const (
@@ -16,10 +15,8 @@ const (
 )
 
 type Muxer interface {
-	Open() (io.ReadWriteCloser, error)
-	OpenStream() (Stream, error)
-	Accept() (io.ReadWriteCloser, error)
-	AcceptStream() (Stream, error)
+	Open() (Stream, error)
+	Accept() (Stream, error)
 	Close() error
 }
 
@@ -70,10 +67,5 @@ func sanitizeConfig(cfg Config) Config {
 }
 
 func Mux(rwc io.ReadWriteCloser, cfg Config) Muxer {
-	switch v := rwc.(type) {
-	case *net.UDPConn:
-		return NewUDPMuxer(v)
-	default:
-		return NewIOMuxer(rwc, cfg)
-	}
+	return NewIOMuxer(rwc, cfg)
 }

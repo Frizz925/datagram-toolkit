@@ -105,9 +105,11 @@ func (ios *IOStream) close(remove bool) error {
 	if remove {
 		ios.muxer.removeStream(ios.id)
 	}
-	_, err := ios.muxer.write(ios.id, cmdFIN, nil)
+	if _, err := ios.muxer.write(ios.id, cmdFIN, nil); err != nil {
+		return err
+	}
 	ios.wg.Wait()
-	return err
+	return nil
 }
 
 func (ios *IOStream) errIfClosed() error {

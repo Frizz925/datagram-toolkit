@@ -23,9 +23,8 @@ func TestIOMuxer(t *testing.T) {
 	go muxAccept(ms, chRwc, chErr)
 
 	t.Cleanup(func() {
-		require := require.New(t)
-		require.Nil(ms.Close())
-		require.Nil(mc.Close())
+		ms.Close()
+		mc.Close()
 	})
 
 	var err error
@@ -41,17 +40,19 @@ func TestIOMuxer(t *testing.T) {
 	t.Run("open and accept stream", func(t *testing.T) {
 		require := require.New(t)
 
-		// Client streams
+		// First pair of streams
 		sc1, err = mc.Open()
 		require.Nil(err)
-		sc2, err = mc.Open()
+		ss1, err = <-chRwc, <-chErr
 		require.Nil(err)
 
-		// Server streams
-		ss1, err = <-chRwc, <-chErr
+		// Second pair of streams
+		sc2, err = mc.Open()
 		require.Nil(err)
 		ss2, err = <-chRwc, <-chErr
 		require.Nil(err)
+
+		// Read routines
 		go streamRead(ss1, chBuf, chErr)
 		go streamRead(ss2, chBuf, chErr)
 	})
@@ -77,14 +78,12 @@ func TestIOMuxer(t *testing.T) {
 	t.Run("cleanup", func(t *testing.T) {
 		require := require.New(t)
 
-		// Close client-side
 		require.Nil(sc1.Close())
-		require.Nil(sc2.Close())
-		require.Nil(mc.Close())
-
-		// Close server-side
 		require.Equal(io.ErrClosedPipe, ss1.Close())
-		require.Equal(io.ErrClosedPipe, ss2.Close())
+		require.Nil(ss2.Close())
+		require.Equal(io.ErrClosedPipe, sc2.Close())
+
+		require.Nil(mc.Close())
 		require.Nil(ms.Close())
 	})
 }
