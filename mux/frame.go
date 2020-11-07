@@ -2,12 +2,14 @@ package mux
 
 import "encoding/binary"
 
-// uint32 StreamID + uint8 CMD
+// u32 StreamID + u8 CMD
 const headerSize = 5
 
 const (
+	//nolint:deadcode,unused,varcheck
+	cmdNOP uint8 = iota
 	// SYN command for opening/accepting new stream
-	cmdSYN uint8 = iota + 1
+	cmdSYN
 	// STD command for sending data in a stream
 	cmdSTD
 	// FIN command for closing stream

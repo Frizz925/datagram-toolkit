@@ -67,6 +67,7 @@ func (ios *IOStream) Read(b []byte) (int, error) {
 			return 0, res.err
 		}
 		ios.readBuf.Write(res.data)
+		ios.muxer.readBuffers.Put(res.head)
 		return ios.readBuf.Read(b)
 	case <-ios.die:
 		return 0, io.EOF

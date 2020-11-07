@@ -28,6 +28,7 @@ type writeResult struct {
 
 type readResult struct {
 	data []byte
+	head []byte
 	err  error
 }
 
