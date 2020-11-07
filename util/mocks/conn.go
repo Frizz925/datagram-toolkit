@@ -77,7 +77,7 @@ func NewConn(pr *io.PipeReader, pw *io.PipeWriter) net.Conn {
 
 func (c *conn) Read(b []byte) (int, error) {
 	if len(b) <= 0 {
-		return 0, io.EOF
+		return 0, io.ErrShortBuffer
 	}
 	if err, ok := c.readError.Load().(error); ok {
 		return 0, err
