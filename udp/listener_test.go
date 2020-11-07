@@ -1,4 +1,4 @@
-package mux
+package udp
 
 import (
 	"datagram-toolkit/util/errors"
@@ -10,13 +10,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestUDPListener(t *testing.T) {
+func TestListener(t *testing.T) {
 	require := require.New(t)
 	expected := []byte("This is a message")
 
 	laddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	require.Nil(err)
-	ul, err := ListenUDP("udp", laddr, DefaultUDPConfig())
+	ul, err := Listen("udp", laddr, DefaultConfig())
 	require.Nil(err)
 	defer ul.Close()
 
@@ -40,8 +40,10 @@ func TestUDPListener(t *testing.T) {
 	client, err := ul.Open(conn.LocalAddr().(*net.UDPAddr))
 	require.Nil(err)
 
+	// Reading into empty buffer should fail...
 	_, err = client.Read(nil)
 	require.Equal(io.ErrShortBuffer, err)
+	// ...while writing from empty buffer should succeed
 	_, err = client.Write(nil)
 	require.Nil(err)
 

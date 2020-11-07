@@ -4,7 +4,6 @@ import (
 	"datagram-toolkit/util"
 	uatomic "datagram-toolkit/util/atomic"
 	"io"
-	"math"
 	"sync"
 	"sync/atomic"
 )
@@ -19,7 +18,8 @@ type IOMuxer struct {
 	acceptCh   chan *IOStream
 	acceptLock sync.Mutex
 
-	readErr atomic.Value
+	readErr   atomic.Value
+	readErrCh chan error
 
 	writeCh chan writeRequest
 
@@ -43,12 +43,13 @@ var handlerMap = map[uint8]func(*IOMuxer, frame){
 func NewIOMuxer(rwc io.ReadWriteCloser, cfg Config) *IOMuxer {
 	cfg = sanitizeConfig(cfg)
 	iom := &IOMuxer{
-		rwc:      rwc,
-		cfg:      cfg,
-		streams:  make(map[uint32]*IOStream),
-		acceptCh: make(chan *IOStream, cfg.AcceptBacklog),
-		writeCh:  make(chan writeRequest, cfg.WriteBacklog),
-		die:      make(chan struct{}),
+		rwc:       rwc,
+		cfg:       cfg,
+		streams:   make(map[uint32]*IOStream),
+		acceptCh:  make(chan *IOStream, cfg.AcceptBacklog),
+		readErrCh: make(chan error, 1),
+		writeCh:   make(chan writeRequest, cfg.WriteBacklog),
+		die:       make(chan struct{}),
 	}
 	iom.wg.Add(2)
 	go iom.readRoutine()
@@ -65,12 +66,13 @@ func (iom *IOMuxer) Open() (Stream, error) {
 	id := iom.idg.Next()
 	iom.mu.RLock()
 	for {
+		// Zero-value ID is reserved for connection-level commands
+		if id <= 0 {
+			id = iom.idg.Next()
+		}
 		_, ok := iom.streams[id]
 		if !ok {
 			break
-		}
-		if id >= math.MaxUint32-1 {
-			return nil, ErrStreamExhausted
 		}
 		id = iom.idg.Next()
 	}
@@ -93,6 +95,8 @@ func (iom *IOMuxer) Open() (Stream, error) {
 	select {
 	case ios := <-iom.acceptCh:
 		return ios, nil
+	case err := <-iom.readErrCh:
+		return nil, err
 	case <-iom.die:
 		return nil, io.EOF
 	}
@@ -112,6 +116,8 @@ func (iom *IOMuxer) Accept() (Stream, error) {
 		// Reply to the incoming ACK frame
 		_, err := iom.write(ios.id, cmdSYN, nil)
 		return ios, err
+	case err := <-iom.readErrCh:
+		return nil, err
 	case <-iom.die:
 		return nil, io.EOF
 	}
@@ -140,11 +146,12 @@ func (iom *IOMuxer) Close() error {
 }
 
 func (iom *IOMuxer) readRoutine() {
-	defer iom.wg.Done()
 	buf := make([]byte, iom.cfg.ReadBufferSize)
 	for {
 		n, err := iom.rwc.Read(buf)
 		if err != nil {
+			iom.wg.Done()
+			iom.handleReadError(err)
 			return
 		}
 		if n < headerSize {
@@ -159,7 +166,6 @@ func (iom *IOMuxer) readRoutine() {
 }
 
 func (iom *IOMuxer) writeRoutine() {
-	defer iom.wg.Done()
 	for {
 		select {
 		case req := <-iom.writeCh:
@@ -172,9 +178,22 @@ func (iom *IOMuxer) writeRoutine() {
 			}
 			req.result <- res
 		case <-iom.die:
+			iom.wg.Done()
 			return
 		}
 	}
+}
+
+func (iom *IOMuxer) handleReadError(err error) {
+	iom.readErr.Store(err)
+	iom.readErrCh <- err
+
+	iom.mu.RLock()
+	res := readResult{err: err}
+	for _, ios := range iom.streams {
+		ios.dispatch(res)
+	}
+	iom.mu.RUnlock()
 }
 
 func (iom *IOMuxer) handleSYN(f frame) {
@@ -193,19 +212,20 @@ func (iom *IOMuxer) handleSTD(f frame) {
 	}
 	b := make([]byte, f.Len())
 	copy(b, f.Body())
-	ios.dispatch(b)
+	ios.dispatch(readResult{data: b})
 }
 
 func (iom *IOMuxer) handleFIN(f frame) {
 	id := f.StreamID()
-	if id <= 0 {
+	if id > 0 {
+		ios := iom.getStream(id)
+		if ios != nil {
+			//nolint:errcheck
+			go ios.Close()
+		}
+	} else {
 		//nolint:errcheck
-		iom.Close()
-		return
-	}
-	ios := iom.getStream(id)
-	if ios != nil {
-		ios.Close()
+		go iom.Close()
 	}
 }
 

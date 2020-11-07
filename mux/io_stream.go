@@ -11,11 +11,10 @@ type IOStream struct {
 	muxer *IOMuxer
 	id    uint32
 
-	readCh   chan []byte
+	readCh   chan readResult
 	readBuf  *bytes.Buffer
 	readLock sync.Mutex
 
-	wg sync.WaitGroup
 	mu sync.Mutex
 
 	die chan struct{}
@@ -34,16 +33,17 @@ type ioStreamConfig struct {
 var _ Stream = (*IOStream)(nil)
 
 func newIOStream(cfg ioStreamConfig) *IOStream {
-	ios := &IOStream{
+	return &IOStream{
 		muxer:   cfg.muxer,
 		id:      cfg.id,
-		readCh:  make(chan []byte, cfg.readBacklog),
+		readCh:  make(chan readResult, cfg.readBacklog),
 		readBuf: bytes.NewBuffer(make([]byte, 0, cfg.initialBufferSize)),
 		die:     make(chan struct{}),
 	}
-	ios.wg.Add(1)
-	go ios.readRoutine()
-	return ios
+}
+
+func (ios *IOStream) ID() uint32 {
+	return ios.id
 }
 
 func (ios *IOStream) Read(b []byte) (int, error) {
@@ -58,12 +58,15 @@ func (ios *IOStream) Read(b []byte) (int, error) {
 	}
 	ios.readLock.Lock()
 	defer ios.readLock.Unlock()
-	if ios.readBuf.Len() > len(b) {
+	if ios.readBuf.Len() >= len(b) {
 		return ios.readBuf.Read(b)
 	}
 	select {
-	case r := <-ios.readCh:
-		ios.readBuf.Write(r)
+	case res := <-ios.readCh:
+		if res.err != nil {
+			return 0, res.err
+		}
+		ios.readBuf.Write(res.data)
 		return ios.readBuf.Read(b)
 	case <-ios.die:
 		return 0, io.EOF
@@ -81,15 +84,11 @@ func (ios *IOStream) Close() error {
 	return ios.close(true)
 }
 
-func (ios *IOStream) readRoutine() {
-	defer ios.wg.Done()
-}
-
-func (ios *IOStream) dispatch(b []byte) {
+func (ios *IOStream) dispatch(res readResult) {
 	if ios.closed.Get() {
 		return
 	}
-	ios.readCh <- b
+	ios.readCh <- res
 }
 
 func (ios *IOStream) close(remove bool) error {
@@ -108,7 +107,6 @@ func (ios *IOStream) close(remove bool) error {
 	if _, err := ios.muxer.write(ios.id, cmdFIN, nil); err != nil {
 		return err
 	}
-	ios.wg.Wait()
 	return nil
 }
 

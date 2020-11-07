@@ -17,10 +17,10 @@ func TestIOMuxer(t *testing.T) {
 
 	s, c := mocks.Conn()
 	ms, mc := NewIOMuxer(s, cfg), NewIOMuxer(c, cfg)
-	chRwc := make(chan io.ReadWriteCloser, 2)
+	chStr := make(chan Stream, 2)
 	chBuf := make(chan []byte, 2)
 	chErr := make(chan error, 2)
-	go muxAccept(ms, chRwc, chErr)
+	go muxAccept(ms, chStr, chErr)
 
 	t.Cleanup(func() {
 		ms.Close()
@@ -36,20 +36,20 @@ func TestIOMuxer(t *testing.T) {
 		require.Nil(t, err)
 	})
 
-	var ss1, ss2, sc1, sc2 io.ReadWriteCloser
+	var ss1, ss2, sc1, sc2 Stream
 	t.Run("open and accept stream", func(t *testing.T) {
 		require := require.New(t)
 
 		// First pair of streams
 		sc1, err = mc.Open()
 		require.Nil(err)
-		ss1, err = <-chRwc, <-chErr
+		ss1, err = <-chStr, <-chErr
 		require.Nil(err)
 
 		// Second pair of streams
 		sc2, err = mc.Open()
 		require.Nil(err)
-		ss2, err = <-chRwc, <-chErr
+		ss2, err = <-chStr, <-chErr
 		require.Nil(err)
 
 		// Read routines
@@ -88,10 +88,10 @@ func TestIOMuxer(t *testing.T) {
 	})
 }
 
-func muxAccept(m Muxer, chRwc chan<- io.ReadWriteCloser, chErr chan<- error) {
+func muxAccept(m Muxer, chStr chan<- Stream, chErr chan<- error) {
 	for {
-		rwc, err := m.Accept()
-		chRwc <- rwc
+		str, err := m.Accept()
+		chStr <- str
 		chErr <- err
 		if err != nil {
 			return
