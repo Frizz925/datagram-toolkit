@@ -18,6 +18,14 @@ func TestBufferPool(t *testing.T) {
 		})
 	})
 
+	t.Run("putting invalid buffer", func(t *testing.T) {
+		require.Panics(t, func() {
+			bp := NewBufferPool(bufferSize, 0)
+			b := bp.Get()
+			bp.Put(b[:8])
+		})
+	})
+
 	t.Run("static pool", func(t *testing.T) {
 		require := require.New(t)
 		bp := NewBufferPool(bufferSize, 5)
