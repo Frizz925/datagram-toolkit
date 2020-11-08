@@ -3,9 +3,9 @@ package mocks
 import (
 	"bytes"
 	"datagram-toolkit/util"
-	"datagram-toolkit/util/errors"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -102,7 +102,7 @@ func (c *conn) Read(b []byte) (int, error) {
 			c.buffer.Write(res.data)
 		case <-c.readNotify:
 		case <-deadline:
-			return 0, errors.ErrTimeout
+			return 0, os.ErrDeadlineExceeded
 		case <-c.die:
 			return 0, io.ErrClosedPipe
 		}
@@ -127,7 +127,7 @@ func (c *conn) Write(b []byte) (int, error) {
 			return res.n, res.err
 		case <-c.writeNotify:
 		case <-deadline:
-			return 0, errors.ErrTimeout
+			return 0, os.ErrDeadlineExceeded
 		case <-c.die:
 			return 0, io.ErrClosedPipe
 		}

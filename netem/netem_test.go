@@ -1,8 +1,8 @@
 package netem
 
 import (
-	"datagram-toolkit/util/errors"
 	"datagram-toolkit/util/mocks"
+	"errors"
 	"io"
 	"math/rand"
 	"os"
@@ -49,7 +49,7 @@ func TestNetem(t *testing.T) {
 			}
 			n, err := ns.Read(buf[r:])
 			if err != nil {
-				if errors.IsDeadlineError(err) {
+				if errors.Is(err, os.ErrDeadlineExceeded) {
 					break
 				}
 				require.Fail("Unexpected error", "Expected deadline error, got %v", err)

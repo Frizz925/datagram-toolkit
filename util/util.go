@@ -6,3 +6,10 @@ func AsyncNotify(ch chan<- struct{}) {
 	default:
 	}
 }
+
+func AsyncNotifyErr(ch chan<- error, err error) {
+	select {
+	case ch <- err:
+	default:
+	}
+}
