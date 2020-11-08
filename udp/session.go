@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"datagram-toolkit/util"
 	uatomic "datagram-toolkit/util/atomic"
-	uerrors "datagram-toolkit/util/errors"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -91,10 +91,11 @@ func (s *Session) Read(b []byte) (int, error) {
 				return 0, res.err
 			}
 			s.readBuffer.Write(res.data)
+			s.listener.readBuffers.Put(res.head)
 			return s.readBuffer.Read(b)
 		case <-s.readNotify:
 		case <-deadline:
-			return 0, uerrors.ErrTimeout
+			return 0, os.ErrDeadlineExceeded
 		case <-s.die:
 			return 0, io.EOF
 		}
@@ -120,7 +121,7 @@ func (s *Session) Write(b []byte) (int, error) {
 			return wr.n, wr.err
 		case <-s.writeNotify:
 		case <-deadline:
-			return 0, uerrors.ErrTimeout
+			return 0, os.ErrDeadlineExceeded
 		case <-s.die:
 			return 0, io.EOF
 		}

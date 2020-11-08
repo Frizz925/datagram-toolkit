@@ -1,6 +1,7 @@
 package udp
 
 import (
+	"datagram-toolkit/util"
 	uatomic "datagram-toolkit/util/atomic"
 	"io"
 	"net"
@@ -21,6 +22,7 @@ type writeResult struct {
 
 type readResult struct {
 	data []byte
+	head []byte
 	err  error
 }
 
@@ -30,8 +32,9 @@ type Listener struct {
 
 	sessions map[string]*Session
 
-	readErr   atomic.Value
-	readErrCh chan error
+	readBuffers *util.BufferPool
+	readErr     atomic.Value
+	readErrCh   chan error
 
 	acceptCh chan *Session
 	writeCh  chan writeRequest
@@ -58,12 +61,14 @@ func Listen(network string, laddr *net.UDPAddr, cfg Config) (*Listener, error) {
 func NewListener(conn *net.UDPConn, cfg Config) *Listener {
 	cfg = sanitizeConfig(cfg)
 	l := &Listener{
-		conn:     conn,
-		cfg:      cfg,
-		sessions: make(map[string]*Session),
-		acceptCh: make(chan *Session, cfg.AcceptBacklog),
-		writeCh:  make(chan writeRequest, cfg.WriteBacklog),
-		die:      make(chan struct{}),
+		conn:        conn,
+		cfg:         cfg,
+		sessions:    make(map[string]*Session),
+		readBuffers: util.NewBufferPool(cfg.ReadBufferSize, 0),
+		readErrCh:   make(chan error, 1),
+		acceptCh:    make(chan *Session, cfg.AcceptBacklog),
+		writeCh:     make(chan writeRequest, cfg.WriteBacklog),
+		die:         make(chan struct{}),
 	}
 	l.wg.Add(2)
 	go l.readRoutine()
@@ -126,17 +131,17 @@ func (l *Listener) Close() error {
 
 func (l *Listener) readRoutine() {
 	defer l.wg.Done()
-	buf := make([]byte, l.cfg.ReadBufferSize)
 	for {
+		buf := l.readBuffers.Get()
 		n, raddr, err := l.conn.ReadFromUDP(buf)
 		if err != nil {
 			go l.handleReadError(err)
 			return
 		}
-		var res readResult
-		res.data = make([]byte, n)
-		copy(res.data, buf)
-		l.getSession(raddr).dispatch(res)
+		l.getSession(raddr).dispatch(readResult{
+			data: buf[:n],
+			head: buf,
+		})
 	}
 }
 

@@ -1,9 +1,9 @@
 package udp
 
 import (
-	"datagram-toolkit/util/errors"
 	"io"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -50,7 +50,7 @@ func TestListener(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Millisecond)
 	require.Nil(client.SetDeadline(deadline))
 	_, err = client.Read(buf)
-	require.Equal(errors.ErrTimeout, err)
+	require.Equal(os.ErrDeadlineExceeded, err)
 
 	require.Nil(ul.Close())
 	require.Nil(<-ch)
