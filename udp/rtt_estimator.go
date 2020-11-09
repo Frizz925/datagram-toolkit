@@ -8,7 +8,6 @@ import (
 
 type RTTEstimator struct {
 	sendTime time.Time
-	sendSeq  uint16
 
 	min      time.Duration
 	smoothed time.Duration
@@ -35,20 +34,16 @@ func (re *RTTEstimator) SmoothedRTT() time.Duration {
 	return re.smoothed
 }
 
-func (re *RTTEstimator) UpdateSend(seq uint16) {
+func (re *RTTEstimator) UpdateSend() {
 	re.mu.Lock()
 	defer re.mu.Unlock()
 	re.sendTime = time.Now()
-	re.sendSeq = seq
 }
 
-func (re *RTTEstimator) UpdateRecv(seq uint16) {
+func (re *RTTEstimator) UpdateRecv() {
 	re.mu.Lock()
 	defer re.mu.Unlock()
 
-	if re.sendSeq != seq {
-		return
-	}
 	if re.sendTime.IsZero() {
 		return
 	}

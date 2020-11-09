@@ -12,22 +12,20 @@ func TestRTTEstimator(t *testing.T) {
 	require := require.New(t)
 	delay := 125 * time.Millisecond
 
-	re.UpdateSend(1)
-	time.Sleep(delay)
-
-	re.UpdateRecv(2)
+	re.UpdateSend()
 	require.Equal(int64(0), re.MinRTT().Nanoseconds())
 	require.Equal(int64(0), re.RTTVar().Nanoseconds())
 	require.Equal(int64(0), re.SmoothedRTT().Nanoseconds())
 
-	re.UpdateRecv(1)
+	time.Sleep(delay)
+	re.UpdateRecv()
 	require.LessOrEqual(delay.Nanoseconds(), re.MinRTT().Nanoseconds())
 	require.LessOrEqual(delay.Nanoseconds(), re.SmoothedRTT().Nanoseconds())
 	require.LessOrEqual(delay.Nanoseconds()/2, re.RTTVar().Nanoseconds())
 
-	re.UpdateSend(2)
+	re.UpdateSend()
 	time.Sleep(delay)
-	re.UpdateRecv(2)
+	re.UpdateRecv()
 	require.LessOrEqual(delay.Nanoseconds(), re.MinRTT().Nanoseconds())
 	require.LessOrEqual(delay.Nanoseconds(), re.SmoothedRTT().Nanoseconds())
 	require.Greater(delay.Nanoseconds()/2, re.RTTVar().Nanoseconds())
