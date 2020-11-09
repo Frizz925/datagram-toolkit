@@ -3,14 +3,12 @@ package udp
 import "encoding/binary"
 
 const (
-	// u16 Sequence + u8 Flags+Cmd
-	szStreamHdr = 3
+	// u8 Flags+Cmd
+	szStreamHdr = 1
 	// u32 Frame Size + u32 Window Size
 	szHandshakeAck = 8
 	// u16 Sequence + u32 Offset + u32 Length
 	szStreamDataHdr = 10
-	// u16 Sequence + u32 Consumed
-	szStreamDataAck = 6
 )
 
 const (
@@ -31,23 +29,18 @@ const (
 
 type streamHdr [szStreamHdr]byte
 
-func newStreamHdr(seq uint16, flags, cmd uint8) streamHdr {
+func newStreamHdr(flags, cmd uint8) streamHdr {
 	var hdr streamHdr
-	binary.BigEndian.PutUint16(hdr[:], seq)
-	hdr[2] = (flags & 0xF << 4) | (cmd & 0xF)
+	hdr[0] = (flags & 0xF << 4) | (cmd & 0xF)
 	return hdr
 }
 
-func (hdr streamHdr) Seq() uint16 {
-	return binary.BigEndian.Uint16(hdr[:])
-}
-
 func (hdr streamHdr) Flags() uint8 {
-	return hdr[2] >> 4 & 0xF
+	return hdr[0] >> 4 & 0xF
 }
 
 func (hdr streamHdr) Cmd() uint8 {
-	return hdr[2] & 0xF
+	return hdr[0] & 0xF
 }
 
 type handshakeAck [szHandshakeAck]byte
@@ -87,21 +80,4 @@ func (sdh streamDataHdr) Off() uint32 {
 
 func (sdh streamDataHdr) Len() uint32 {
 	return binary.BigEndian.Uint32(sdh[6:])
-}
-
-type streamDataAck [szStreamDataAck]byte
-
-func newStreamDataAck(seq uint16, consumed uint32) streamDataAck {
-	var sda streamDataAck
-	binary.BigEndian.PutUint16(sda[:], seq)
-	binary.BigEndian.PutUint32(sda[2:], consumed)
-	return sda
-}
-
-func (sda streamDataAck) Seq() uint16 {
-	return binary.BigEndian.Uint16(sda[:])
-}
-
-func (sda streamDataAck) Consumed() uint32 {
-	return binary.BigEndian.Uint32(sda[2:])
 }

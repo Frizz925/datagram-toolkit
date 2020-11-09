@@ -1,5 +1,7 @@
 package udp
 
+import "log"
+
 const (
 	defaultStreamWindowSize = 65535
 	defaultStreamBufferSize = 2048
@@ -16,6 +18,9 @@ type StreamConfig struct {
 	// Peer configurations.
 	// If not defined, these configurations would later be set through a handshake mechanism.
 	PeerConfig StreamPeerConfig
+
+	// Optional logger for debugging purposes
+	Logger *log.Logger
 
 	ReadBufferSize int
 	ReadBacklog    int
@@ -36,6 +41,7 @@ func DefaultStreamConfig() StreamConfig {
 		ReadBacklog:     defaultStreamBacklog,
 		WriteBufferSize: defaultStreamBufferSize,
 		WriteBacklog:    defaultStreamBacklog,
+		Logger:          discardLogger,
 	}
 }
 
@@ -60,6 +66,9 @@ func sanitizeStreamConfig(cfg StreamConfig) StreamConfig {
 	}
 	if cfg.WriteBacklog < 0 {
 		cfg.WriteBacklog = 0
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = discardLogger
 	}
 	return cfg
 }
