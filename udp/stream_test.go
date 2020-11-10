@@ -14,15 +14,15 @@ func TestStream(t *testing.T) {
 	logger := stderrLogger
 	netemCfg := netem.Config{
 		WriteFragmentSize: 48,
-		WriteReorderNth:   2,
-		WriteDuplicateNth: 3,
-		WriteLossNth:      4,
+		WriteDuplicateNth: 2,
+		WriteReorderNth:   3,
+		WriteLossNth:      5,
 	}
 	streamCfg := DefaultStreamConfig()
 	streamCfg.Logger = logger
 
 	rand := rand.New(rand.NewSource(0))
-	expectedLen := 64
+	expectedLen := 2048
 	expected := make([]byte, expectedLen)
 
 	c1, c2 := mocks.Conn()
@@ -46,6 +46,6 @@ func TestStream(t *testing.T) {
 	require.Equal(expectedLen, r)
 	require.Equal(expected, buf[:r])
 
-	require.Nil(s1.Close())
-	require.Equal(io.EOF, s2.Close())
+	s1.Close()
+	s2.Close()
 }

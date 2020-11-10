@@ -56,10 +56,8 @@ type Stream struct {
 
 	rttStats RTTStats
 
-	streamSeqs     map[uint16]bool
-	streamRead     uint32
-	streamSize     uint32
-	streamRecvLock sync.Mutex
+	streamRead uint32
+	streamSize uint32
 
 	streamRttSeq   uint32
 	streamRttSize  uint32
@@ -67,15 +65,9 @@ type Stream struct {
 	streamAckMap   map[uint16]streamPendingAck
 	streamSendLock sync.Mutex
 
-	retransmitNotify chan struct{}
-
 	buffer     *bytes.Buffer
 	buffers    *util.BufferPool
 	bufferLock sync.Mutex
-
-	handshakeCh   chan error
-	handshakeDone uatomic.Bool
-	handshakeLock sync.Mutex
 
 	readCh    chan []byte
 	readErr   atomic.Value
@@ -86,6 +78,14 @@ type Stream struct {
 	writeCh    chan streamWriteRequest
 	writeRstCh chan struct{}
 	writeLock  sync.Mutex
+
+	retransmitNotify chan struct{}
+
+	ackCh chan streamHdr
+
+	handshakeCh   chan error
+	handshakeDone uatomic.Bool
+	handshakeLock sync.Mutex
 
 	resetCh   chan error
 	resetLock sync.Mutex
@@ -110,7 +110,6 @@ func NewStream(conn net.Conn, cfg StreamConfig) *Stream {
 		frameSize:      uint32(cfg.PeerConfig.FrameSize),
 		peerWindowSize: uint32(cfg.PeerConfig.WindowSize),
 
-		streamSeqs:   make(map[uint16]bool),
 		streamAcks:   make([]uint16, 0, cfg.ReadBacklog),
 		streamAckMap: make(map[uint16]streamPendingAck),
 
@@ -136,9 +135,10 @@ func NewStream(conn net.Conn, cfg StreamConfig) *Stream {
 	if s.frameSize > 0 && s.peerWindowSize > 0 {
 		s.handshakeDone.Set(true)
 	}
-	s.wg.Add(3)
+	s.wg.Add(4)
 	go s.readRoutine()
 	go s.writeRoutine()
+	go s.ackRoutine()
 	go s.retransmitRoutine()
 	return s
 }
@@ -318,7 +318,7 @@ func (s *Stream) write(flags, cmd uint8, body ...[]byte) (int, error) {
 func (s *Stream) sendData(flags uint8, off int, b []byte) (int, error) {
 	seq := s.nextSeq()
 	bn := len(b)
-	sdh := newStreamDataHdr(seq, uint32(off), uint32(bn))
+	sdh := newStreamDataHdr(uint32(off), uint32(bn))
 	fn, err := s.write(flags, cmdPSH, sdh[:], b)
 	if err != nil {
 		return 0, err

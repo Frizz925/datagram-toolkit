@@ -4,9 +4,11 @@ import (
 	"crypto/rand"
 	"datagram-toolkit/crypto"
 	"datagram-toolkit/example/shared"
+	"datagram-toolkit/mux"
 	"io"
 	"net"
 	"os"
+	"time"
 
 	"github.com/sirupsen/logrus"
 )
@@ -44,12 +46,31 @@ func start() error {
 	}
 	defer conn.Close()
 
-	crypto := crypto.New(conn, crypto.DefaultConfig(aead))
+	// Create muxer
+	m := mux.Mux(conn, mux.DefaultConfig())
+	defer m.Close()
+
+	// Open stream from muxer
+	s, err := m.Open()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	// Send crypto frame to server
+	crypto := crypto.New(s, crypto.DefaultConfig(aead))
 	log.Infof("Sending to server, length: %d", len(payload))
 	if _, err := crypto.Write(payload); err != nil {
 		return err
 	}
 
+	// Set read deadline to 5 seconds
+	deadline := time.Now().Add(5 * time.Second)
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return err
+	}
+
+	// Receive crypto frame from server
 	buf := make([]byte, 65535)
 	n, err := crypto.Read(buf)
 	if err != nil {

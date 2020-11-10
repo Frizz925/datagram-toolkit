@@ -9,8 +9,10 @@ import (
 func TestStreamFrame(t *testing.T) {
 	t.Run("streamHdr", func(t *testing.T) {
 		require := require.New(t)
+		seq := uint16(1)
 		flags := flagACK | flagFIN
-		hdr := newStreamHdr(flags, cmdSYN)
+		hdr := newStreamHdr(seq, flags, cmdSYN)
+		require.Equal(seq, hdr.Seq())
 		require.Equal(flags, hdr.Flags())
 		require.Equal(cmdSYN, hdr.Cmd())
 	})
@@ -26,11 +28,9 @@ func TestStreamFrame(t *testing.T) {
 
 	t.Run("streamDataHdr", func(t *testing.T) {
 		require := require.New(t)
-		seq := uint16(1)
 		off := uint32(256)
 		size := uint32(512)
-		sdh := newStreamDataHdr(seq, off, size)
-		require.Equal(seq, sdh.Seq())
+		sdh := newStreamDataHdr(off, size)
 		require.Equal(off, sdh.Off())
 		require.Equal(size, sdh.Len())
 	})

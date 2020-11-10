@@ -99,6 +99,9 @@ func (c *conn) Read(b []byte) (int, error) {
 			if res.err != nil {
 				return 0, res.err
 			}
+			if len(res.data) <= 0 {
+				return 0, io.EOF
+			}
 			c.buffer.Write(res.data)
 		case <-c.readNotify:
 		case <-deadline:

@@ -5,13 +5,17 @@ import (
 	"sync/atomic"
 )
 
-func (s *Stream) internalRead() (err error) {
+func (s *Stream) internalRead(seq uint16) (nextSeq uint16, err error) {
 	s.readerLock.Lock()
 	defer s.readerLock.Unlock()
 	var hdr streamHdr
 	if _, err := s.reader.Read(hdr[:]); err != nil {
-		return err
+		return seq, err
 	}
+	if hdr.Seq() <= seq {
+		return seq, nil
+	}
+	nextSeq = hdr.Seq()
 	isAck := hdr.Flags()&flagACK != 0
 	switch hdr.Cmd() {
 	case cmdSYN:
@@ -24,13 +28,13 @@ func (s *Stream) internalRead() (err error) {
 	case cmdPSH:
 		err = s.handleData(hdr.Flags())
 	}
-	return err
+	return nextSeq, err
 }
 
 func (s *Stream) internalWrite(req streamWriteRequest) (n int, err error) {
 	s.writerLock.Lock()
 	defer s.writerLock.Unlock()
-	hdr := newStreamHdr(req.flags, req.cmd)
+	hdr := newStreamHdr(s.nextSeq(), req.flags, req.cmd)
 	if _, err := s.writer.Write(hdr[:]); err != nil {
 		return 0, err
 	}
@@ -77,7 +81,6 @@ func (s *Stream) internalReadReset() {
 	util.AsyncNotify(s.readRstCh)
 	atomic.StoreUint32(&s.streamRead, 0)
 	atomic.StoreUint32(&s.streamSize, 0)
-	s.streamSeqs = make(map[uint16]bool)
 }
 
 func (s *Stream) internalWriteReset() {

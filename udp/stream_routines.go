@@ -7,8 +7,12 @@ func (s *Stream) readRoutine() {
 		s.wg.Done()
 		s.logger.Printf("%p: Read routine done", s)
 	}()
+	var (
+		seq uint16
+		err error
+	)
 	for {
-		err := s.internalRead()
+		seq, err = s.internalRead(seq)
 		if err != nil {
 			s.handleReadError(err)
 			return
@@ -33,21 +37,32 @@ func (s *Stream) writeRoutine() {
 	}
 }
 
+func (s *Stream) ackRoutine() {
+	defer func() {
+		s.wg.Done()
+		s.logger.Printf("%p: Ack routine done", s)
+	}()
+}
+
 func (s *Stream) retransmitRoutine() {
 	defer func() {
 		s.wg.Done()
 		s.logger.Printf("%p: Retransmit routine done", s)
 	}()
+	ticker := time.NewTicker(1e+6 * time.Hour)
+	defer ticker.Stop()
 	for {
 		select {
+		case <-ticker.C:
+			err := s.internalRetransmit()
+			if err != nil {
+				s.handleRetransmitError(err)
+				return
+			}
+		case <-s.retransmitNotify:
+			ticker.Reset(s.rttStats.Smoothed())
 		case <-s.die:
 			return
-		default:
-		}
-		time.Sleep(s.rttStats.Smoothed())
-		err := s.internalRetransmit()
-		if err != nil {
-			s.handleRetransmitError(err)
 		}
 	}
 }

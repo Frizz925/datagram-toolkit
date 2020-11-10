@@ -4,8 +4,9 @@ import (
 	"crypto/cipher"
 	"datagram-toolkit/crypto"
 	"datagram-toolkit/example/shared"
-	"datagram-toolkit/muxer"
+	"datagram-toolkit/mux"
 	"datagram-toolkit/netem"
+	"datagram-toolkit/udp"
 	"errors"
 	"io"
 	"net"
@@ -27,9 +28,13 @@ var log = &logrus.Logger{
 }
 
 var netemCfg = netem.Config{
-	Backlog:           5,
-	ReadFragmentSize:  24,
+	ReadFragmentSize: 24,
+	ReadReorderNth:   2,
+	ReadDuplicateNth: 4,
+
 	WriteFragmentSize: 24,
+	WriteReorderNth:   2,
+	WriteDuplicateNth: 4,
 }
 
 func main() {
@@ -44,16 +49,16 @@ func start() error {
 
 	// Initialize the listener
 	laddr := shared.GetServerAddr()
-	ul, err := muxer.ListenUDP("udp", laddr, muxer.DefaultConfig())
+	l, err := udp.Listen("udp", laddr, udp.DefaultConfig())
 	if err != nil {
 		return err
 	}
-	log.Infof("Server listening at %s", ul.Addr())
+	log.WithField("addr", l.Addr()).Info("Server listening")
 
 	// Start listening
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
-	go listenRoutine(wg, ul, aead)
+	go listenRoutine(wg, l, aead)
 
 	// Handle signals
 	ch := make(chan os.Signal, 1)
@@ -64,7 +69,7 @@ func start() error {
 	timer := time.NewTimer(3 * time.Second)
 	done := make(chan error)
 	go func() {
-		if err := ul.Close(); err != nil {
+		if err := l.Close(); err != nil {
 			done <- err
 			return
 		}
@@ -82,10 +87,13 @@ func start() error {
 
 func listenRoutine(wg *sync.WaitGroup, l net.Listener, aead cipher.AEAD) {
 	defer wg.Done()
+	logFields := logrus.Fields{
+		"addr": l.Addr(),
+	}
 	if err := listen(wg, l, aead); err != nil && err != io.EOF {
-		log.Errorf("Listen error: %+v", err)
+		log.WithFields(logFields).Errorf("Listen error: %+v", err)
 	} else {
-		log.Infof("Listen shutdown successfully")
+		log.WithFields(logFields).Infof("Listen shutdown successfully")
 	}
 }
 
@@ -95,33 +103,55 @@ func listen(wg *sync.WaitGroup, l net.Listener, aead cipher.AEAD) error {
 		if err != nil {
 			return err
 		}
-		ne := netem.New(conn, netemCfg)
+		log.WithField("addr", conn.RemoteAddr()).Info("Accepted new client from listener")
 		wg.Add(1)
-		go serveRoutine(wg, ne, aead)
+		go serveRoutine(wg, netem.New(conn, netemCfg), aead)
 	}
 }
 
 func serveRoutine(wg *sync.WaitGroup, conn net.Conn, aead cipher.AEAD) {
 	defer wg.Done()
+	logFields := logrus.Fields{
+		"addr": conn.RemoteAddr(),
+	}
 	if err := serve(conn, aead); err != nil && err != io.EOF {
-		log.Errorf("Serve error: %+v", err)
+		log.WithFields(logFields).Errorf("Serve error: %+v", err)
 	} else {
-		log.Infof("Serve shutdown successfully")
+		log.WithFields(logFields).Infof("Serve shutdown successfully")
 	}
 }
 
 func serve(conn net.Conn, aead cipher.AEAD) error {
 	defer conn.Close()
-	addr := conn.RemoteAddr()
-	crypto := crypto.New(conn, crypto.DefaultConfig(aead))
+	deadline := time.Now().Add(15 * time.Second)
+	if err := conn.SetDeadline(deadline); err != nil {
+		return err
+	}
+
+	m := mux.Mux(conn, mux.DefaultConfig())
+	defer m.Close()
+
+	s, err := m.Accept()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	logFields := logrus.Fields{
+		"addr":      conn.RemoteAddr(),
+		"stream_id": s.ID(),
+	}
+	log.WithFields(logFields).Info("Accepted new stream from client")
+
+	crypto := crypto.New(s, crypto.DefaultConfig(aead))
 	buf := make([]byte, 65535)
 	for {
 		n, err := crypto.Read(buf)
 		if err != nil {
 			return err
 		}
-		log.Infof("Received from client %s, length: %d", addr, n)
-		log.Infof("Sending to client %s, length: %d", addr, n)
+		log.WithFields(logFields).Infof("Received from client, length: %d", n)
+		log.WithFields(logFields).Infof("Sending to client, length: %d", n)
 		if _, err := crypto.Write(buf[:n]); err != nil {
 			return err
 		}

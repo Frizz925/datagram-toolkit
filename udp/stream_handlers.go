@@ -91,7 +91,6 @@ func (s *Stream) handleData(flags uint8) error {
 	}
 	off := int(sdh.Off())
 	length := int(sdh.Len())
-	seq := sdh.Seq()
 
 	// Read the stream data
 	buf := s.buffers.Get()
@@ -101,28 +100,14 @@ func (s *Stream) handleData(flags uint8) error {
 		return err
 	}
 
-	// Asynchronously send the ack frame
-	var sbuf [2]byte
-	binary.BigEndian.PutUint16(sbuf[:], sdh.Seq())
-	s.writeAsync(flagACK, cmdPSH, sbuf[:])
-
-	s.streamRecvLock.Lock()
-	defer s.streamRecvLock.Unlock()
-	// Ignore this sequence since we've read it before
-	// e.g. due to packet duplication
-	if ok := s.streamSeqs[seq]; ok {
-		return nil
-	}
-	s.streamSeqs[seq] = true
-
 	// Copy the stream data into our window buffer
-	copy(s.window[off:], buf[:n])
+	nn := copy(s.window[off:], buf[:n])
 
-	read := atomic.AddUint32(&s.streamRead, uint32(n))
+	read := atomic.AddUint32(&s.streamRead, uint32(nn))
 	size := atomic.LoadUint32(&s.streamSize)
 	// All frames have been read, put the buffer into backlog
 	if size > 0 && read >= size {
-		buf := make([]byte, size)
+		buf := make([]byte, read)
 		copy(buf, s.window)
 		s.readCh <- buf
 		s.internalReset()
