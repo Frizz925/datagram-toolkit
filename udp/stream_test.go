@@ -5,13 +5,18 @@ import (
 	"datagram-toolkit/util/mocks"
 	"io"
 	"math/rand"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
 func TestStream(t *testing.T) {
-	logger := stderrLogger
+	logger := discardLogger
+	if os.Getenv("VERBOSE_TEST") == "1" {
+		logger = stderrLogger
+	}
+
 	expectedLen := 512
 	netemCfg := netem.Config{
 		WriteFragmentSize: 64,

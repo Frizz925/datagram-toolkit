@@ -5,7 +5,6 @@ import "log"
 const (
 	defaultStreamWindowSize = 65535
 	defaultStreamBufferSize = 2048
-	defaultStreamBufferPool = 5
 	defaultStreamBacklog    = 5
 
 	minStreamBacklog    = 0
@@ -24,11 +23,9 @@ type StreamConfig struct {
 	Logger *log.Logger
 
 	ReadBufferSize int
-	ReadBufferPool int
 	ReadBacklog    int
 
 	WriteBufferSize int
-	WriteBufferPool int
 	WriteBacklog    int
 }
 
@@ -41,10 +38,8 @@ func DefaultStreamConfig() StreamConfig {
 	return StreamConfig{
 		WindowSize:      defaultStreamWindowSize,
 		ReadBufferSize:  defaultStreamBufferSize,
-		ReadBufferPool:  defaultStreamBufferPool,
 		ReadBacklog:     defaultStreamBacklog,
 		WriteBufferSize: defaultStreamBufferSize,
-		WriteBufferPool: defaultStreamBufferPool,
 		WriteBacklog:    defaultStreamBacklog,
 
 		Logger: discardLogger,
@@ -64,17 +59,11 @@ func sanitizeStreamConfig(cfg StreamConfig) StreamConfig {
 	if cfg.ReadBufferSize < minStreamBufferSize {
 		cfg.ReadBufferSize = minStreamBufferSize
 	}
-	if cfg.ReadBufferPool < 0 {
-		cfg.ReadBufferPool = 0
-	}
 	if cfg.ReadBacklog < minStreamBacklog {
 		cfg.ReadBacklog = minStreamBacklog
 	}
 	if cfg.WriteBufferSize < minStreamBufferSize {
 		cfg.WriteBufferSize = minStreamBufferSize
-	}
-	if cfg.WriteBufferPool < 0 {
-		cfg.WriteBufferPool = 0
 	}
 	if cfg.WriteBacklog < minStreamBacklog {
 		cfg.WriteBacklog = minStreamBacklog
