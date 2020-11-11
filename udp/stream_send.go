@@ -20,6 +20,7 @@ func (s *Stream) sendRoutine() {
 			}
 			seq++
 			var res streamSendResult
+			s.measureSendRtt(seq, req.flags, req.cmd)
 			res.n, res.err = s.internalWrite(seq, req.flags, req.cmd, req.data)
 			if res.err == nil {
 				s.maybeRetransmit(seq, req)

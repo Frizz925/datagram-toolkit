@@ -55,10 +55,12 @@ type Stream struct {
 	sendCh   chan streamSendRequest
 	sendPool *util.BufferPool
 
-	ackCh chan uint16
+	ackCh     chan uint16
+	ackNotify chan struct{}
 
-	retransmitCh    chan streamRetransmitPending
-	retransmitAckCh chan []uint16
+	retransmitCh     chan streamRetransmitPending
+	retransmitNotify chan struct{}
+	retransmitAckCh  chan []uint16
 
 	readBuffer *bytes.Buffer
 	readLock   sync.Mutex
@@ -70,6 +72,10 @@ type Stream struct {
 	handshakeLock   sync.Mutex
 
 	resetNotify chan struct{}
+
+	rttStats RTTStats
+	rttSend  chan uint16
+	rttRecv  chan uint16
 
 	wg  sync.WaitGroup
 	mu  sync.Mutex
@@ -99,15 +105,20 @@ func NewStream(conn net.Conn, cfg StreamConfig) *Stream {
 		sendCh:   make(chan streamSendRequest, cfg.WriteBacklog),
 		sendPool: util.NewBufferPool(cfg.WriteBufferSize, 0),
 
-		ackCh: make(chan uint16, cfg.WriteBacklog),
+		ackCh:     make(chan uint16, cfg.WriteBacklog),
+		ackNotify: make(chan struct{}),
 
-		retransmitCh:    make(chan streamRetransmitPending, cfg.WriteBacklog),
-		retransmitAckCh: make(chan []uint16, cfg.ReadBacklog),
+		retransmitCh:     make(chan streamRetransmitPending, cfg.WriteBacklog),
+		retransmitNotify: make(chan struct{}),
+		retransmitAckCh:  make(chan []uint16, cfg.ReadBacklog),
 
 		readBuffer: bytes.NewBuffer(make([]byte, 0, cfg.ReadBufferSize)),
 
 		handshakeNotify: make(chan struct{}, 1),
 		resetNotify:     make(chan struct{}),
+
+		rttRecv: make(chan uint16, cfg.ReadBacklog),
+		rttSend: make(chan uint16, cfg.WriteBacklog),
 
 		die: make(chan struct{}),
 	}
@@ -115,11 +126,12 @@ func NewStream(conn net.Conn, cfg StreamConfig) *Stream {
 		s.handshakeDone.Set(true)
 	}
 	s.recvBuffer.Store(streamRecvPendingHeap{})
-	s.wg.Add(4)
+	s.wg.Add(5)
 	go s.recvRoutine()
 	go s.sendRoutine()
 	go s.ackRoutine()
 	go s.retransmitRoutine()
+	go s.rttRoutine()
 	return s
 }
 

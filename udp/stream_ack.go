@@ -8,7 +8,6 @@ import (
 
 func (s *Stream) ackRoutine() {
 	defer s.wg.Done()
-	// TODO: Set ticker accordingly to RTT estimator
 	ticker := time.NewTicker(125 * time.Millisecond)
 	defer ticker.Stop()
 	seqMap := make(map[uint16]bool)
@@ -26,6 +25,9 @@ func (s *Stream) ackRoutine() {
 			if len(seqMap) < fsize/2-1 {
 				continue
 			}
+		case <-s.ackNotify:
+			ticker.Reset(s.rttStats.Smoothed())
+			continue
 		case <-ticker.C:
 		case <-s.die:
 			return

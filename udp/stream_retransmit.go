@@ -33,6 +33,9 @@ func (s *Stream) retransmitRoutine() {
 			}
 			s.log("Acknowledged frames: %+v", seqs)
 			continue
+		case <-s.retransmitNotify:
+			ticker.Reset(s.rttStats.Smoothed() * 2 / 3)
+			continue
 		case <-ticker.C:
 		case <-s.die:
 			return

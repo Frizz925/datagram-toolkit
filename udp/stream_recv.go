@@ -108,6 +108,9 @@ func (s *Stream) internalRead(buf []byte, seq uint16) (uint16, error) {
 		}
 		s.maybeSendAck(hdr)
 	}
+	if hdr.Cmd() == protocol.CmdACK {
+		s.measureRecvRtt(hdr.Seq(), hdr.Flags())
+	}
 	return nextSeq, nil
 }
 
