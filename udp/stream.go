@@ -93,16 +93,16 @@ func NewStream(conn net.Conn, cfg StreamConfig) *Stream {
 		window: make([]byte, cfg.WindowSize),
 
 		recvCh:    make(chan []byte, cfg.ReadBacklog),
-		recvPool:  util.NewBufferPool(cfg.ReadBufferSize, 0),
+		recvPool:  util.NewBufferPool(cfg.ReadBufferSize, cfg.ReadBufferPool),
 		recvErrCh: make(chan error, 1),
 
 		sendCh:   make(chan streamSendRequest, cfg.WriteBacklog),
-		sendPool: util.NewBufferPool(cfg.WriteBufferSize, 0),
+		sendPool: util.NewBufferPool(cfg.WriteBufferSize, cfg.WriteBufferPool),
 
-		ackCh: make(chan uint16, 1),
+		ackCh: make(chan uint16, cfg.WriteBacklog),
 
-		retransmitCh:    make(chan streamRetransmitPending, 1),
-		retransmitAckCh: make(chan []uint16, 1),
+		retransmitCh:    make(chan streamRetransmitPending, cfg.WriteBacklog),
+		retransmitAckCh: make(chan []uint16, cfg.ReadBacklog),
 
 		readBuffer: bytes.NewBuffer(make([]byte, 0, cfg.ReadBufferSize)),
 

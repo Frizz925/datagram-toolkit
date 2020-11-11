@@ -21,8 +21,8 @@ func TestStream(t *testing.T) {
 	}
 	streamCfg := StreamConfig{
 		WindowSize: expectedLen / 2,
+		Logger:     logger,
 	}
-	streamCfg.Logger = logger
 
 	rand := rand.New(rand.NewSource(0))
 	expected := make([]byte, expectedLen)
