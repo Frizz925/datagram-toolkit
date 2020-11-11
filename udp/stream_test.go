@@ -12,39 +12,45 @@ import (
 
 func TestStream(t *testing.T) {
 	logger := stderrLogger
+	expectedLen := 2048
 	netemCfg := netem.Config{
 		WriteFragmentSize: 48,
-		WriteDuplicateNth: 2,
-		WriteReorderNth:   3,
-		WriteLossNth:      5,
+		WriteDuplicateNth: 3,
+		WriteReorderNth:   5,
+		WriteLossNth:      7,
 	}
-	streamCfg := DefaultStreamConfig()
+	streamCfg := StreamConfig{
+		WindowSize: expectedLen / 2,
+	}
 	streamCfg.Logger = logger
 
 	rand := rand.New(rand.NewSource(0))
-	expectedLen := 2048
 	expected := make([]byte, expectedLen)
+	buf := make([]byte, expectedLen)
 
 	c1, c2 := mocks.Conn()
 	s1 := NewStream(netem.New(c1, netemCfg), streamCfg)
 	s2 := NewStream(netem.New(c2, netemCfg), streamCfg)
 
-	logger.Printf("s1: %p", s1)
-	logger.Printf("s2: %p", s2)
-
 	require := require.New(t)
 	_, err := io.ReadFull(rand, expected)
 	require.Nil(err)
 
-	w, err := s1.Write(expected)
-	require.Nil(err)
-	require.Equal(expectedLen, w)
+	for i := 1; i <= 2; i++ {
+		w, err := s1.Write(expected)
+		require.Nil(err)
+		require.Greater(w, 0)
 
-	buf := make([]byte, expectedLen*2)
-	r, err := s2.Read(buf)
-	require.Nil(err)
-	require.Equal(expectedLen, r)
-	require.Equal(expected, buf[:r])
+		n, err := s1.Write(expected[w:])
+		require.Nil(err)
+		require.Greater(n, 0)
+
+		r, err := s2.Read(buf)
+		require.Nil(err, "Read error at run %d", i)
+		require.Equal(w, r, "Read/write count mismatch at run %d", i)
+		require.Equal(expected[:r], buf[:r], "Content mismatch at run %d", i)
+		require.Nil(s2.Reset(), "Reset error at run %d", i)
+	}
 
 	s1.Close()
 	s2.Close()

@@ -7,7 +7,6 @@ const (
 	defaultStreamBufferSize = 2048
 	defaultStreamBacklog    = 5
 
-	minStreamFrameSize  = 32
 	minStreamWindowSize = 512
 	minStreamBufferSize = 512
 )

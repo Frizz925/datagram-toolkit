@@ -3,203 +3,150 @@ package udp
 import (
 	"bufio"
 	"bytes"
+	"datagram-toolkit/udp/protocol"
 	"datagram-toolkit/util"
 	uatomic "datagram-toolkit/util/atomic"
-	"encoding/binary"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"sync/atomic"
 )
 
-type streamWriteRequest struct {
-	flags  uint8
-	cmd    uint8
-	data   []byte
-	head   []byte
-	result chan<- streamWriteResult
+type streamRecvPending struct {
+	off        int
+	data, head []byte
+	isFin      bool
 }
 
-type streamWriteResult struct {
+type streamSendRequest struct {
+	flags, cmd uint8
+	data, head []byte
+	result     chan<- streamSendResult
+}
+
+type streamSendResult struct {
 	n   int
 	err error
-}
-
-type streamPendingAck struct {
-	flags uint8
-	off   int
-	data  []byte
 }
 
 type Stream struct {
 	net.Conn
 
-	logger *log.Logger
+	reader *bufio.Reader
+	writer *bufio.Writer
 
-	reader     *bufio.Reader
-	readerLock sync.Mutex
-
-	writer     *bufio.Writer
-	writerLock sync.Mutex
-
-	// For generating frame sequence number
-	seq uint32
-	// Our window for receving stream of data
-	window []byte
-	// The size of our window
-	windowSize uint32
-	// The size of a single frame which should be the same for both peers
-	frameSize uint32
-	// The size of peer's window
+	windowSize     uint32
+	frameSize      uint32
 	peerWindowSize uint32
 
-	rttStats RTTStats
+	window []byte
 
-	streamRead uint32
-	streamSize uint32
+	recvCh     chan []byte
+	recvPool   *util.BufferPool
+	recvErrCh  chan error
+	recvErr    atomic.Value
+	recvOffset uint32
+	recvBuffer atomic.Value
 
-	streamRttSeq   uint32
-	streamRttSize  uint32
-	streamAcks     []uint16
-	streamAckMap   map[uint16]streamPendingAck
-	streamSendLock sync.Mutex
+	sendCh   chan streamSendRequest
+	sendPool *util.BufferPool
 
-	buffer     *bytes.Buffer
-	buffers    *util.BufferPool
-	bufferLock sync.Mutex
+	readBuffer *bytes.Buffer
+	readLock   sync.Mutex
 
-	readCh    chan []byte
-	readErr   atomic.Value
-	readErrCh chan error
-	readRstCh chan struct{}
-	readLock  sync.Mutex
+	writeLock sync.Mutex
 
-	writeCh    chan streamWriteRequest
-	writeRstCh chan struct{}
-	writeLock  sync.Mutex
+	handshakeNotify chan struct{}
+	handshakeDone   uatomic.Bool
+	handshakeLock   sync.Mutex
 
-	retransmitNotify chan struct{}
+	resetNotify chan struct{}
 
-	ackCh chan streamHdr
+	wg sync.WaitGroup
 
-	handshakeCh   chan error
-	handshakeDone uatomic.Bool
-	handshakeLock sync.Mutex
-
-	resetCh   chan error
-	resetLock sync.Mutex
-
-	wg  sync.WaitGroup
-	mu  sync.Mutex
-	die chan struct{}
-
+	die       chan struct{}
 	closeOnce sync.Once
 }
 
 func NewStream(conn net.Conn, cfg StreamConfig) *Stream {
 	cfg = sanitizeStreamConfig(cfg)
 	s := &Stream{
-		Conn:   conn,
-		logger: cfg.Logger,
+		Conn: conn,
+
 		reader: bufio.NewReaderSize(conn, cfg.ReadBufferSize),
 		writer: bufio.NewWriterSize(conn, cfg.WriteBufferSize),
 
-		window:         make([]byte, cfg.WindowSize),
 		windowSize:     uint32(cfg.WindowSize),
 		frameSize:      uint32(cfg.PeerConfig.FrameSize),
 		peerWindowSize: uint32(cfg.PeerConfig.WindowSize),
 
-		streamAcks:   make([]uint16, 0, cfg.ReadBacklog),
-		streamAckMap: make(map[uint16]streamPendingAck),
+		window: make([]byte, cfg.WindowSize),
 
-		retransmitNotify: make(chan struct{}),
+		recvCh:    make(chan []byte, cfg.ReadBacklog),
+		recvPool:  util.NewBufferPool(cfg.ReadBufferSize, cfg.ReadBacklog),
+		recvErrCh: make(chan error, 1),
 
-		buffer:  bytes.NewBuffer(make([]byte, 0, cfg.WindowSize)),
-		buffers: util.NewBufferPool(cfg.ReadBufferSize, cfg.ReadBacklog),
+		sendCh:   make(chan streamSendRequest, cfg.WriteBacklog),
+		sendPool: util.NewBufferPool(cfg.WriteBufferSize, cfg.WriteBacklog),
 
-		handshakeCh: make(chan error, 1),
+		readBuffer: bytes.NewBuffer(make([]byte, 0, cfg.ReadBufferSize)),
 
-		readCh:    make(chan []byte, cfg.ReadBacklog),
-		readErrCh: make(chan error, 1),
-		readRstCh: make(chan struct{}),
-
-		writeCh:    make(chan streamWriteRequest, cfg.WriteBacklog),
-		writeRstCh: make(chan struct{}),
-
-		resetCh: make(chan error, 1),
+		handshakeNotify: make(chan struct{}, 1),
+		resetNotify:     make(chan struct{}),
 
 		die: make(chan struct{}),
 	}
-	// Assume we've done handshake if peer configurations are set
 	if s.frameSize > 0 && s.peerWindowSize > 0 {
 		s.handshakeDone.Set(true)
 	}
-	s.wg.Add(4)
-	go s.readRoutine()
-	go s.writeRoutine()
-	go s.ackRoutine()
-	go s.retransmitRoutine()
+	s.recvBuffer.Store([]streamRecvPending{})
+	s.wg.Add(2)
+	go s.recvRoutine()
+	go s.sendRoutine()
 	return s
 }
 
-// Initiate handshake with peer in order to gain both peer's own and shared configurations
 func (s *Stream) Handshake() error {
-	s.handshakeLock.Lock()
-	defer s.handshakeLock.Unlock()
-	// Handshake already done, no need to do anything
 	if s.handshakeDone.Get() {
 		return nil
 	}
 	if err := s.getReadError(); err != nil {
 		return err
 	}
-
-	buf := s.buffers.Get()
-	defer s.buffers.Put(buf)
-	binary.BigEndian.PutUint32(buf, s.windowSize)
-	s.rttStats.UpdateSend()
-	if _, err := s.write(0, cmdSYN, buf[:]); err != nil {
+	s.handshakeLock.Lock()
+	defer s.handshakeLock.Unlock()
+	if err := s.sendHandshake(); err != nil {
 		return err
 	}
-
 	select {
-	case err := <-s.handshakeCh:
-		if err != nil {
-			return err
-		}
+	case <-s.handshakeNotify:
 		s.handshakeDone.Set(true)
 		return nil
-	case err := <-s.readErrCh:
+	case err := <-s.recvErrCh:
 		return err
+	case <-s.resetNotify:
+		return io.EOF
 	case <-s.die:
 		return io.EOF
 	}
 }
 
 func (s *Stream) Read(b []byte) (int, error) {
+	if err := s.getReadError(); err != nil {
+		return 0, err
+	}
 	s.readLock.Lock()
 	defer s.readLock.Unlock()
 	for {
-		s.bufferLock.Lock()
-		if s.buffer.Len() > 0 {
-			n, err := s.buffer.Read(b)
-			s.bufferLock.Unlock()
-			return n, err
+		if s.readBuffer.Len() > 0 {
+			return s.readBuffer.Read(b)
 		}
-		s.bufferLock.Unlock()
 		select {
-		case data := <-s.readCh:
-			n := copy(b, data)
-			if n < len(data) {
-				s.bufferLock.Lock()
-				s.buffer.Write(data[n:])
-				s.bufferLock.Unlock()
-			}
-			return n, nil
-		case err := <-s.readErrCh:
+		case p := <-s.recvCh:
+			s.readBuffer.Write(p)
+		case err := <-s.recvErrCh:
 			return 0, err
-		case <-s.readRstCh:
+		case <-s.resetNotify:
 			return 0, io.EOF
 		case <-s.die:
 			return 0, io.EOF
@@ -213,142 +160,62 @@ func (s *Stream) Write(b []byte) (int, error) {
 	if err := s.Handshake(); err != nil {
 		return 0, err
 	}
-
-	fsize := int(atomic.LoadUint32(&s.frameSize)) - szStreamDataHdr
+	fsize := int(atomic.LoadUint32(&s.frameSize))
 	wsize := int(atomic.LoadUint32(&s.peerWindowSize))
 	if len(b) > wsize {
 		b = b[:wsize]
 	}
-
-	finSent := false
-	s.streamSendLock.Lock()
-	defer func() {
-		s.streamSendLock.Unlock()
-		// FIN frame not sent, tell peer to reset stream
-		if !finSent {
-			s.writeAsync(0, cmdRST)
-		}
-	}()
-
 	w := 0
 	for len(b) > 0 {
-		var (
-			bs    []byte
-			flags uint8
-		)
-		if fsize >= len(b) {
-			bs = b
-			flags = flagFIN
-		} else {
+		bs := b
+		flags := uint8(0)
+		if len(bs) > fsize {
 			bs = b[:fsize]
+		} else {
+			flags = protocol.FlagFIN
 		}
 		n, err := s.sendData(flags, w, bs)
 		if err != nil {
 			return w, err
 		}
-		if !finSent && flags == flagFIN {
-			finSent = true
-		}
 		b = b[n:]
 		w += n
 	}
-
 	return w, nil
 }
 
 func (s *Stream) Reset() error {
-	s.resetLock.Lock()
-	defer s.resetLock.Unlock()
-	if _, err := s.write(0, cmdRST); err != nil {
-		return err
-	}
-	var err error
-	select {
-	case err = <-s.resetCh:
-	case err = <-s.readErrCh:
-	case <-s.die:
-		err = io.EOF
-	}
-	s.internalReset()
-	return err
+	return s.internalReset(true)
 }
 
 func (s *Stream) Close() error {
 	return s.internalClose(true)
 }
 
-func (s *Stream) nextSeq() uint16 {
-	return uint16(atomic.AddUint32(&s.seq, 1))
-}
-
-func (s *Stream) writeAsync(flags, cmd uint8, body ...[]byte) <-chan streamWriteResult {
-	var req streamWriteRequest
-	req.flags = flags
-	req.cmd = cmd
-
-	ch := make(chan streamWriteResult, 1)
-	req.result = ch
-
-	if len(body) > 0 {
-		buf := s.buffers.Get()
-		n := 0
-		for _, b := range body {
-			nn := copy(buf[n:], b)
-			n += nn
+func (s *Stream) internalReset(sendRst bool) error {
+	if sendRst {
+		if err := s.sendDataRst(); err != nil {
+			return err
 		}
-		req.data = buf[:n]
-		req.head = buf
 	}
-
-	s.writeCh <- req
-	return ch
+	s.recvBuffer.Store([]streamRecvPending{})
+	atomic.StoreUint32(&s.recvOffset, 0)
+	util.AsyncNotify(s.resetNotify)
+	return nil
 }
 
-func (s *Stream) write(flags, cmd uint8, body ...[]byte) (int, error) {
-	select {
-	case res := <-s.writeAsync(flags, cmd, body...):
-		return res.n, res.err
-	case <-s.writeRstCh:
-		return 0, io.EOF
-	case <-s.die:
-		return 0, io.EOF
+func (s *Stream) internalClose(sendFin bool) error {
+	if sendFin {
+		if err := s.sendClose(); err != nil {
+			return err
+		}
 	}
-}
-
-func (s *Stream) sendData(flags uint8, off int, b []byte) (int, error) {
-	seq := s.nextSeq()
-	bn := len(b)
-	sdh := newStreamDataHdr(uint32(off), uint32(bn))
-	fn, err := s.write(flags, cmdPSH, sdh[:], b)
-	if err != nil {
-		return 0, err
-	}
-	// Bytes written returned by write is the amount including the headers
-	// We need to deduct the stream frame header
-	n := fn - szStreamDataHdr
-
-	rttSize := int(atomic.LoadUint32(&s.streamRttSize))
-	if n > rttSize {
-		atomic.StoreUint32(&s.streamRttSize, uint32(n))
-		atomic.StoreUint32(&s.streamRttSeq, uint32(seq))
-		s.rttStats.UpdateSend()
-	}
-
-	buf := make([]byte, n)
-	copy(buf, b)
-	s.streamAcks = append(s.streamAcks, seq)
-	s.streamAckMap[seq] = streamPendingAck{
-		flags: flags,
-		off:   off,
-		data:  buf,
-	}
-
-	return n, nil
-}
-
-func (s *Stream) getReadError() error {
-	if err, ok := s.readErr.Load().(error); ok {
+	s.closeOnce.Do(func() {
+		close(s.die)
+	})
+	if err := s.Conn.Close(); err != nil {
 		return err
 	}
+	s.wg.Wait()
 	return nil
 }

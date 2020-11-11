@@ -1,140 +1,158 @@
 package udp
 
 import (
+	"datagram-toolkit/udp/protocol"
 	"datagram-toolkit/util"
-	"encoding/binary"
+	"io"
 	"sync/atomic"
 )
 
-func (s *Stream) handleReadError(err error) {
-	s.writeAsync(0, cmdFIN)
-	s.readErr.Store(err)
-	s.readErrCh <- err
+type streamHandler func(s *Stream, flags uint8) error
+
+var streamHandlers = map[uint8]streamHandler{
+	protocol.CmdSYN: (*Stream).handleSYN,
+	protocol.CmdFIN: (*Stream).handleFIN,
+	protocol.CmdPSH: (*Stream).handlePSH,
 }
 
-func (s *Stream) handleRetransmitError(err error) {
-	// Ignore retransmission errors for now until we find a better way to deal with them
-}
-
-func (s *Stream) handleHandshake(isAck bool) error {
-	if isAck {
-		var hack handshakeAck
-		_, err := s.reader.Read(hack[:])
+func (s *Stream) handleSYN(flags uint8) error {
+	switch flags {
+	case protocol.FlagACK:
+		ack, err := s.readHandshakeAck()
 		if err != nil {
 			return err
 		}
-		s.rttStats.UpdateRecv()
-
-		atomic.StoreUint32(&s.peerWindowSize, hack.WindowSize())
-		atomic.StoreUint32(&s.frameSize, hack.FrameSize())
-		util.AsyncNotifyErr(s.handshakeCh, nil)
-
+		atomic.StoreUint32(&s.peerWindowSize, ack.WindowSize())
+		atomic.StoreUint32(&s.frameSize, ack.FrameSize())
+		util.AsyncNotify(s.handshakeNotify)
 		return nil
 	}
+	buf := s.recvPool.Get()
+	defer s.recvPool.Put(buf)
 
-	buf := s.buffers.Get()
-	defer s.buffers.Put(buf)
-
+	var hdr protocol.HandshakeHdr
 	n, err := s.reader.Read(buf)
 	if err != nil {
 		return err
 	}
+	copy(hdr[:], buf[:n])
 
-	// Silently drop the handshake attempt if the (padded) frame size is too small
-	n -= szStreamDataHdr
-	if n < minStreamFrameSize {
-		return nil
-	}
+	wsize := hdr.WindowSize()
+	fsize := uint32(n - len(hdr))
 
-	wsize := binary.BigEndian.Uint32(buf)
-	fsize := uint32(n)
 	atomic.StoreUint32(&s.peerWindowSize, wsize)
 	atomic.StoreUint32(&s.frameSize, fsize)
 
-	// Send back the ack frame
-	hack := newHandshakeAck(wsize, fsize)
-	ch := s.writeAsync(flagACK, cmdSYN, hack[:])
-	go func() {
-		s.handshakeCh <- (<-ch).err
-	}()
-
+	if err := s.sendHandshakeAck(wsize, fsize); err != nil {
+		return err
+	}
+	util.AsyncNotify(s.handshakeNotify)
 	return nil
 }
 
-func (s *Stream) handleReset(isAck bool) {
-	if isAck {
-		util.AsyncNotifyErr(s.resetCh, nil)
-		return
-	}
-	go func() {
-		_, err := s.write(flagACK, cmdRST)
-		util.AsyncNotifyErr(s.resetCh, err)
-		s.internalReset()
-	}()
+func (s *Stream) handleFIN(flags uint8) error {
+	//nolint:errcheck
+	go s.internalClose(false)
+	return nil
 }
 
-func (s *Stream) handleData(flags uint8) error {
-	// Handle stream ACK frames
-	// Stream frame flags are mutually exclusive, so we just use equal operators
-	if flags == flagACK {
-		return s.handleDataAck()
+func (s *Stream) handlePSH(flags uint8) error {
+	switch flags {
+	case protocol.FlagRST:
+		return s.internalReset(false)
 	}
+	isFin := flags == protocol.FlagFIN
 
-	var sdh streamDataHdr
-	if _, err := s.reader.Read(sdh[:]); err != nil {
+	var hdr protocol.DataHdr
+	if _, err := s.reader.Read(hdr[:]); err != nil {
 		return err
 	}
-	// If frame has FIN flag, then this should be the last stream frame
-	if flags == cmdFIN {
-		size := sdh.Off() + sdh.Len()
-		atomic.StoreUint32(&s.streamSize, size)
-	}
-	off := int(sdh.Off())
-	length := int(sdh.Len())
+	off := int(hdr.Off())
+	size := int(hdr.Len())
 
-	// Read the stream data
-	buf := s.buffers.Get()
-	defer s.buffers.Put(buf)
-	n, err := s.reader.Read(buf[:length])
+	// Read the rest of the frame first before doing anything else
+	buf := s.recvPool.Get()
+	r, err := io.ReadFull(s.reader, buf[:size])
 	if err != nil {
 		return err
 	}
 
-	// Copy the stream data into our window buffer
-	nn := copy(s.window[off:], buf[:n])
-
-	read := atomic.AddUint32(&s.streamRead, uint32(nn))
-	size := atomic.LoadUint32(&s.streamSize)
-	// All frames have been read, put the buffer into backlog
-	if size > 0 && read >= size {
-		buf := make([]byte, read)
-		copy(buf, s.window)
-		s.readCh <- buf
-		s.internalReset()
+	// Data offset larger than our window size, tell peer to reset stream
+	wsize := int(atomic.LoadUint32(&s.windowSize))
+	if off > wsize {
+		return s.internalReset(true)
 	}
 
-	return nil
-}
-
-func (s *Stream) handleDataAck() error {
-	var buf [2]byte
-	if _, err := s.reader.Read(buf[:]); err != nil {
-		return err
-	}
-	seq := binary.BigEndian.Uint16(buf[:])
-
-	s.streamSendLock.Lock()
-	defer s.streamSendLock.Unlock()
-	if _, ok := s.streamAckMap[seq]; !ok {
+	roff := int(atomic.LoadUint32(&s.recvOffset))
+	// Ignore if this frame offset is lower than our read offset
+	// (eg. due to frame retransmission)
+	if off < roff {
 		return nil
 	}
-	delete(s.streamAckMap, seq)
 
-	rttSeq := atomic.LoadUint32(&s.streamRttSeq)
-	if rttSeq == uint32(seq) {
-		s.rttStats.UpdateRecv()
+	// Buffer the frame for read later
+	buffer := s.recvBuffer.Load().([]streamRecvPending)
+	pending := streamRecvPending{
+		off:   off,
+		data:  buf[:r],
+		head:  buf,
+		isFin: isFin,
 	}
-	util.AsyncNotify(s.retransmitNotify)
+	if len(buffer) > 0 {
+		// Insert the buffer in order according to their offset
+		var (
+			i int
+			p streamRecvPending
+		)
+		for i, p = range buffer {
+			if p.off > off {
+				break
+			}
+		}
+		head := append(buffer[:i], pending)
+		head = append(head, buffer[i:]...)
+		buffer = head
+	} else {
+		// Else just append to the tail
+		buffer = append(buffer, pending)
+	}
+
+	// If the head of the buffer's offset doesn't match our read offset
+	// then wait until the next frame with matching offset arrives
+	// (eg. due to packet reordering)
+	if buffer[0].off != roff {
+		s.recvBuffer.Store(buffer)
+		return nil
+	}
+
+	for len(buffer) > 0 {
+		frame := buffer[0]
+		buffer = buffer[1:]
+		if frame.off < roff {
+			// We check again for the offset in the buffered frame
+			// If it's somehow lower than our read offset, then ignore it and read the next buffered frame
+			continue
+		} else if frame.off != roff {
+			// Else if the next buffered frame somehow doesn't, match our read offset, then bail out
+			// (eg. it still hasn't arrived until we started reading from buffer)
+			break
+		}
+		n := copy(s.window[frame.off:], frame.data)
+		roff += n
+		s.recvPool.Put(frame.head)
+
+		// We've reached the final frame, we can let the application read the data
+		if frame.isFin {
+			// Queue the result for read to application
+			buf := make([]byte, roff)
+			copy(buf, s.window)
+			s.recvCh <- buf
+			// Reset the stream
+			return s.internalReset(false)
+		}
+	}
+	s.recvBuffer.Store(buffer)
+	atomic.StoreUint32(&s.recvOffset, uint32(roff))
 
 	return nil
 }
