@@ -12,12 +12,12 @@ import (
 
 func TestStream(t *testing.T) {
 	logger := stderrLogger
-	expectedLen := 2048
+	expectedLen := 512
 	netemCfg := netem.Config{
-		WriteFragmentSize: 48,
+		WriteFragmentSize: 64,
+		WriteReorderNth:   2,
 		WriteDuplicateNth: 3,
-		WriteReorderNth:   5,
-		WriteLossNth:      7,
+		WriteLossNth:      5,
 	}
 	streamCfg := StreamConfig{
 		WindowSize: expectedLen / 2,
@@ -36,21 +36,15 @@ func TestStream(t *testing.T) {
 	_, err := io.ReadFull(rand, expected)
 	require.Nil(err)
 
-	for i := 1; i <= 2; i++ {
-		w, err := s1.Write(expected)
-		require.Nil(err)
-		require.Greater(w, 0)
+	w, err := s1.Write(expected)
+	require.Nil(err)
+	require.Greater(w, 0)
 
-		n, err := s1.Write(expected[w:])
-		require.Nil(err)
-		require.Greater(n, 0)
-
-		r, err := s2.Read(buf)
-		require.Nil(err, "Read error at run %d", i)
-		require.Equal(w, r, "Read/write count mismatch at run %d", i)
-		require.Equal(expected[:r], buf[:r], "Content mismatch at run %d", i)
-		require.Nil(s2.Reset(), "Reset error at run %d", i)
-	}
+	r, err := s2.Read(buf)
+	require.Nil(err, "Read error")
+	require.Equal(w, r, "Read/write count mismatch")
+	require.Equal(expected[:r], buf[:r], "Content mismatch")
+	require.Nil(s2.Reset(), "Reset error")
 
 	s1.Close()
 	s2.Close()

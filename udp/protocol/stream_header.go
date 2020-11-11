@@ -1,6 +1,9 @@
 package protocol
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"fmt"
+)
 
 type StreamHdr [StreamHdrSize]byte
 
@@ -21,4 +24,9 @@ func (hdr StreamHdr) Flags() uint8 {
 
 func (hdr StreamHdr) Cmd() uint8 {
 	return hdr[2] & 0xF
+}
+
+func (hdr StreamHdr) String() string {
+	cmd := cmdMap[hdr.Cmd()]
+	return fmt.Sprintf("StreamHdr(Seq: %d, Flags: %d, Cmd: %s)", hdr.Seq(), hdr.Flags(), cmd)
 }

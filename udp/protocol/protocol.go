@@ -7,6 +7,8 @@ const (
 	HandshakeHdrSize = 16
 	// u32 Frame Size + u32 Window Size
 	HandshakeAckSize = 8
+	// u16 Length
+	AckHdrSize = 2
 	// u32 Offset + u32 Length
 	DataHdrSize = 8
 )
@@ -27,3 +29,10 @@ const (
 	// Command for pushing data to peer
 	CmdPSH
 )
+
+var cmdMap = map[uint8]string{
+	CmdSYN: "SYN",
+	CmdACK: "ACK",
+	CmdFIN: "FIN",
+	CmdPSH: "PSH",
+}

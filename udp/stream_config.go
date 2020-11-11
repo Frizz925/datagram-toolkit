@@ -7,6 +7,7 @@ const (
 	defaultStreamBufferSize = 2048
 	defaultStreamBacklog    = 5
 
+	minStreamBacklog    = 1
 	minStreamWindowSize = 512
 	minStreamBufferSize = 512
 )
@@ -57,14 +58,14 @@ func sanitizeStreamConfig(cfg StreamConfig) StreamConfig {
 	if cfg.ReadBufferSize < minStreamBufferSize {
 		cfg.ReadBufferSize = minStreamBufferSize
 	}
-	if cfg.ReadBacklog < 0 {
-		cfg.ReadBacklog = 0
+	if cfg.ReadBacklog < minStreamBacklog {
+		cfg.ReadBacklog = minStreamBacklog
 	}
 	if cfg.WriteBufferSize < minStreamBufferSize {
 		cfg.WriteBufferSize = minStreamBufferSize
 	}
-	if cfg.WriteBacklog < 0 {
-		cfg.WriteBacklog = 0
+	if cfg.WriteBacklog < minStreamBacklog {
+		cfg.WriteBacklog = minStreamBacklog
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = discardLogger

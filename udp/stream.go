@@ -1,12 +1,12 @@
 package udp
 
 import (
-	"bufio"
 	"bytes"
 	"datagram-toolkit/udp/protocol"
 	"datagram-toolkit/util"
 	uatomic "datagram-toolkit/util/atomic"
 	"io"
+	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -29,11 +29,15 @@ type streamSendResult struct {
 	err error
 }
 
+type streamRetransmitPending struct {
+	streamSendRequest
+	seq uint16
+}
+
 type Stream struct {
 	net.Conn
 
-	reader *bufio.Reader
-	writer *bufio.Writer
+	logger *log.Logger
 
 	windowSize     uint32
 	frameSize      uint32
@@ -51,6 +55,11 @@ type Stream struct {
 	sendCh   chan streamSendRequest
 	sendPool *util.BufferPool
 
+	ackCh chan uint16
+
+	retransmitCh    chan streamRetransmitPending
+	retransmitAckCh chan []uint16
+
 	readBuffer *bytes.Buffer
 	readLock   sync.Mutex
 
@@ -62,9 +71,11 @@ type Stream struct {
 
 	resetNotify chan struct{}
 
-	wg sync.WaitGroup
+	wg  sync.WaitGroup
+	mu  sync.Mutex
+	die chan struct{}
 
-	die       chan struct{}
+	closed    uatomic.Bool
 	closeOnce sync.Once
 }
 
@@ -73,8 +84,7 @@ func NewStream(conn net.Conn, cfg StreamConfig) *Stream {
 	s := &Stream{
 		Conn: conn,
 
-		reader: bufio.NewReaderSize(conn, cfg.ReadBufferSize),
-		writer: bufio.NewWriterSize(conn, cfg.WriteBufferSize),
+		logger: cfg.Logger,
 
 		windowSize:     uint32(cfg.WindowSize),
 		frameSize:      uint32(cfg.PeerConfig.FrameSize),
@@ -83,11 +93,16 @@ func NewStream(conn net.Conn, cfg StreamConfig) *Stream {
 		window: make([]byte, cfg.WindowSize),
 
 		recvCh:    make(chan []byte, cfg.ReadBacklog),
-		recvPool:  util.NewBufferPool(cfg.ReadBufferSize, cfg.ReadBacklog),
+		recvPool:  util.NewBufferPool(cfg.ReadBufferSize, 0),
 		recvErrCh: make(chan error, 1),
 
 		sendCh:   make(chan streamSendRequest, cfg.WriteBacklog),
-		sendPool: util.NewBufferPool(cfg.WriteBufferSize, cfg.WriteBacklog),
+		sendPool: util.NewBufferPool(cfg.WriteBufferSize, 0),
+
+		ackCh: make(chan uint16, 1),
+
+		retransmitCh:    make(chan streamRetransmitPending, 1),
+		retransmitAckCh: make(chan []uint16, 1),
 
 		readBuffer: bytes.NewBuffer(make([]byte, 0, cfg.ReadBufferSize)),
 
@@ -99,22 +114,24 @@ func NewStream(conn net.Conn, cfg StreamConfig) *Stream {
 	if s.frameSize > 0 && s.peerWindowSize > 0 {
 		s.handshakeDone.Set(true)
 	}
-	s.recvBuffer.Store([]streamRecvPending{})
-	s.wg.Add(2)
+	s.recvBuffer.Store(streamRecvPendingHeap{})
+	s.wg.Add(4)
 	go s.recvRoutine()
 	go s.sendRoutine()
+	go s.ackRoutine()
+	go s.retransmitRoutine()
 	return s
 }
 
 func (s *Stream) Handshake() error {
-	if s.handshakeDone.Get() {
-		return nil
-	}
 	if err := s.getReadError(); err != nil {
 		return err
 	}
 	s.handshakeLock.Lock()
 	defer s.handshakeLock.Unlock()
+	if s.handshakeDone.Get() {
+		return nil
+	}
 	if err := s.sendHandshake(); err != nil {
 		return err
 	}
@@ -198,13 +215,18 @@ func (s *Stream) internalReset(sendRst bool) error {
 			return err
 		}
 	}
-	s.recvBuffer.Store([]streamRecvPending{})
+	s.recvBuffer.Store(streamRecvPendingHeap{})
 	atomic.StoreUint32(&s.recvOffset, 0)
 	util.AsyncNotify(s.resetNotify)
 	return nil
 }
 
 func (s *Stream) internalClose(sendFin bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed.Get() {
+		return io.ErrClosedPipe
+	}
 	if sendFin {
 		if err := s.sendClose(); err != nil {
 			return err
@@ -217,5 +239,6 @@ func (s *Stream) internalClose(sendFin bool) error {
 		return err
 	}
 	s.wg.Wait()
+	s.closed.Set(true)
 	return nil
 }

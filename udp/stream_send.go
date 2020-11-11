@@ -2,6 +2,7 @@ package udp
 
 import (
 	"datagram-toolkit/udp/protocol"
+	"encoding/binary"
 	"io"
 	"math"
 )
@@ -20,7 +21,9 @@ func (s *Stream) sendRoutine() {
 			seq++
 			var res streamSendResult
 			res.n, res.err = s.internalWrite(seq, req.flags, req.cmd, req.data)
-			if len(req.head) > 0 {
+			if res.err == nil {
+				s.maybeRetransmit(seq, req)
+			} else if len(req.head) > 0 {
 				s.sendPool.Put(req.head)
 			}
 			req.result <- res
@@ -30,10 +33,25 @@ func (s *Stream) sendRoutine() {
 	}
 }
 
+func (s *Stream) sendAck(seqs []uint16) {
+	buf := s.sendPool.Get()
+	defer s.sendPool.Put(buf)
+	hdr := protocol.NewAckHdr(uint16(len(seqs)))
+	n := copy(buf, hdr[:])
+	for _, seq := range seqs {
+		binary.BigEndian.PutUint16(buf[n:], seq)
+		n += 2
+	}
+	//nolint:errcheck
+	s.write(protocol.FlagACK, protocol.CmdACK, buf[:n])
+}
+
 // Send handshake header followed with padding up to read buffer size.
 // The padding is then used to determine the frame size from peer's side.
 func (s *Stream) sendHandshake() error {
 	hdr := protocol.NewHandshakeHdr(s.windowSize)
+	// We use recv pool instead because it is used to determine
+	// our frame size to our peer, which also depends on our read buffer size
 	buf := s.recvPool.Get()
 	defer s.recvPool.Put(buf)
 	copy(buf, hdr[:])
@@ -81,11 +99,7 @@ func (s *Stream) writeAsync(flags, cmd uint8, body ...[]byte) <-chan streamSendR
 		}
 		req.data = req.head[:n]
 	}
-	select {
-	case s.sendCh <- req:
-	case <-s.die:
-		ch <- streamSendResult{err: io.EOF}
-	}
+	s.sendCh <- req
 	return ch
 }
 
@@ -100,16 +114,18 @@ func (s *Stream) write(flags, cmd uint8, body ...[]byte) (int, error) {
 }
 
 func (s *Stream) internalWrite(seq uint16, flags, cmd uint8, b []byte) (int, error) {
+	buf := s.sendPool.Get()
+	defer s.sendPool.Put(buf)
 	hdr := protocol.NewStreamHdr(seq, flags, cmd)
-	if _, err := s.writer.Write(hdr[:]); err != nil {
-		return 0, err
+	n := copy(buf, hdr[:])
+	n += copy(buf[n:], b)
+	if n > len(buf) {
+		n = len(buf)
 	}
-	n, err := s.writer.Write(b)
+	s.log("Sending frame: %s, Body(Length: %d)", hdr, len(b))
+	w, err := s.Conn.Write(buf[:n])
 	if err != nil {
 		return 0, err
 	}
-	if err := s.writer.Flush(); err != nil {
-		return 0, err
-	}
-	return n, nil
+	return w - len(hdr), nil
 }
